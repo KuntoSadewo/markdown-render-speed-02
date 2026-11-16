@@ -1828,14 +1828,16 @@ function tryHtmlBlock(txt, off) {
 // Expand the tabs in a whitespace-only string to spaces, tab stops
 // every 4, starting at column startCol (marked's J helper).
 function expandWS(s, startCol) {
-  let cols = startCol, out = '';
+  let cols = startCol;
+  let out = '';
   for (let i = 0; i < s.length; i++) {
-    if (s[i] === '\t') {
+    const ch = s[i];
+    if (ch === '\t') {
       const w = 4 - (cols % 4);
       out += ' '.repeat(w);
       cols += w;
     } else {
-      out += s[i];
+      out += ch;
       cols++;
     }
   }
@@ -1845,20 +1847,24 @@ function expandWS(s, startCol) {
 // Expand the leading whitespace run of a line to spaces (tab-stop
 // aware); the rest of the line is untouched.
 function expandLeadingWS(line, startCol) {
-  let i = 0;
-  while (i < line.length && (line[i] === ' ' || line[i] === '\t')) i++;
-  if (i === 0) return line;
-  return expandWS(line.slice(0, i), startCol) + line.slice(i);
+  let end = 0;
+  while (end < line.length && (line[end] === ' ' || line[end] === '\t')) end++;
+  if (end === 0) return line;
+  return expandWS(line.slice(0, end), startCol) + line.slice(end);
 }
 
 // Column (tab-stop aware) of the first non-space/tab character.
 function firstNonSpaceCol(line) {
   let cols = 0;
   for (let i = 0; i < line.length; i++) {
-    const c = line[i];
-    if (c === ' ') cols++;
-    else if (c === '\t') cols += 4 - (cols % 4);
-    else return cols;
+    const ch = line[i];
+    if (ch === ' ') {
+      cols++;
+    } else if (ch === '\t') {
+      cols += 4 - (cols % 4);
+    } else {
+      return cols;
+    }
   }
   return cols;
 }
@@ -1867,117 +1873,155 @@ function firstNonSpaceCol(line) {
 // definition {label, href, title, raw, next} or null; the caller
 // decides whether to record it (a def right after a paragraph or a
 // list-item text line is literal text instead).
-function tryDef(src, pos) {
-  const ind = indentOf(src, pos);
+function tryDef(txt, off) {
+  const ind = indentOf(txt, off);
   if (ind.cols > 3) return null;
-  let p = ind.next;
-  if (src[p] !== '[') return null;
-  const n = src.length;
-  let depth = 0, q = p;
+  let scan = ind.next;
+  if (txt[scan] !== '[') return null;
+  const total = txt.length;
+  let depth = 0;
+  let cursor = scan;
   let label = '';
-  while (q < n) {
-    const ch = src[q];
+  while (cursor < total) {
+    const ch = txt[cursor];
     // an escaped punctuation does not open/close the bracket, but
     // the backslash STAYS in the label (marked stores the raw label
     // and only normalises case/whitespace) so the lookup key matches
-    if (ch === '\\' && q + 1 < n && isAsciiPunct(src[q + 1])) { label += src[q] + src[q + 1]; q += 2; continue; }
+    if (ch === '\\' && cursor + 1 < total && isAsciiPunct(txt[cursor + 1])) {
+      label += txt[cursor] + txt[cursor + 1];
+      cursor += 2;
+      continue;
+    }
     // a def label may not contain an unescaped [ (marked's def
     // regex); [ref[bar]]: /uri is not a definition
     if (ch === '[' && depth >= 1) return null;
-    if (ch === '[') depth++;
-    else if (ch === ']') {
+    if (ch === '[') {
+      depth++;
+    } else if (ch === ']') {
       depth--;
       if (depth === 0) break;
     }
     label += ch;
-    q++;
+    cursor++;
   }
-  if (q >= n || depth !== 0) return null;
+  if (cursor >= total || depth !== 0) return null;
   label = normalizeLabel(label.slice(1));
-  if (!label || label.length > 999) return null;
-  q++;
+  if (label.length === 0 || label.length > 999) return null;
+  cursor++;
   let nl = 0;
-  while (q < n && (src[q] === ' ' || src[q] === '\t' || src[q] === '\n')) {
-    if (src[q] === '\n') { nl++; if (nl > 3) return null; }
-    q++;
+  while (cursor < total && (txt[cursor] === ' ' || txt[cursor] === '\t' || txt[cursor] === '\n')) {
+    if (txt[cursor] === '\n') {
+      nl++;
+      if (nl > 3) return null;
+    }
+    cursor++;
   }
-  if (src[q] !== ':') return null;
-  q++;
+  if (txt[cursor] !== ':') return null;
+  cursor++;
   // after the colon: spaces, then optionally one newline plus
   // indentation — the destination may be on the next line
-  while (q < n && (src[q] === ' ' || src[q] === '\t')) q++;
-  if (src[q] === '\n') {
-    q++;
-    while (q < n && (src[q] === ' ' || src[q] === '\t')) q++;
-    if (q >= n || src[q] === '\n') return null;
+  while (cursor < total && (txt[cursor] === ' ' || txt[cursor] === '\t')) cursor++;
+  if (txt[cursor] === '\n') {
+    cursor++;
+    while (cursor < total && (txt[cursor] === ' ' || txt[cursor] === '\t')) cursor++;
+    if (cursor >= total || txt[cursor] === '\n') return null;
   }
   let dest = '';
-  if (src[q] === '<') {
-    const end = src.indexOf('>', q + 1);
-    const le = lineEnd(src, q);
+  if (txt[cursor] === '<') {
+    const end = txt.indexOf('>', cursor + 1);
+    const le = lineEnd(txt, cursor);
     if (end === -1 || end > le) return null;
-    dest = src.slice(q + 1, end);
+    dest = txt.slice(cursor + 1, end);
     if (/[\n<>]/.test(dest)) return null;
-    q = end + 1;
+    cursor = end + 1;
   } else {
-    const start = q;
+    const start = cursor;
     let parens = 0;
-    while (q < n) {
-      const ch = src[q];
+    while (cursor < total) {
+      const ch = txt[cursor];
       if (ch === ' ' || ch === '\t' || ch === '\n') break;
-      if (ch === '\\' && q + 1 < n && isAsciiPunct(src[q + 1])) { q += 2; continue; }
+      if (ch === '\\' && cursor + 1 < total && isAsciiPunct(txt[cursor + 1])) {
+        cursor += 2;
+        continue;
+      }
       if (ch === '(') parens++;
       else if (ch === ')') {
         if (parens === 0) break;
         parens--;
       }
-      q++;
+      cursor++;
     }
-    if (q === start) return null;
-    dest = src.slice(start, q);
+    if (cursor === start) return null;
+    dest = txt.slice(start, cursor);
   }
   let title = undefined;
-  let r = q;
+  let r = cursor;
   let sp = 0;
-  while (r < n && (src[r] === ' ' || src[r] === '\t')) { r++; sp++; }
-  if (src[r] === '\n') {
+  while (r < total && (txt[r] === ' ' || txt[r] === '\t')) {
+    r++;
+    sp++;
+  }
+  if (txt[r] === '\n') {
     // the title may be on the next line, after its indentation
     let tp = r + 1;
-    while (tp < n && (src[tp] === ' ' || src[tp] === '\t')) tp++;
-    const t = parseLinkTitle(src, tp);
-    if (t) {
+    while (tp < total && (txt[tp] === ' ' || txt[tp] === '\t')) tp++;
+    const t = parseLinkTitle(txt, tp);
+    if (t !== null) {
       let after = t.end;
-      while (after < n && (src[after] === ' ' || src[after] === '\t')) after++;
-      if (after < n && src[after] === '\n') { title = t.title; r = after; }
-      else if (after >= n) { title = t.title; r = after; }
+      while (after < total && (txt[after] === ' ' || txt[after] === '\t')) after++;
+      if (after < total && txt[after] === '\n') {
+        title = t.title;
+        r = after;
+      } else if (after >= total) {
+        title = t.title;
+        r = after;
+      }
     }
     // no title: the def ends at this newline
   } else if (sp > 0) {
     // same-line title: needs at least one space before it
-    const t = parseLinkTitle(src, r);
-    if (t) {
+    const t = parseLinkTitle(txt, r);
+    if (t !== null) {
       let after = t.end;
-      while (after < n && (src[after] === ' ' || src[after] === '\t')) after++;
-      if (after < n && src[after] === '\n') { title = t.title; r = after; }
-      else if (after >= n) { title = t.title; r = after; }
+      while (after < total && (txt[after] === ' ' || txt[after] === '\t')) after++;
+      if (after < total && txt[after] === '\n') {
+        title = t.title;
+        r = after;
+      } else if (after >= total) {
+        title = t.title;
+        r = after;
+      }
     }
   }
   // without a space or newline before it there is no title, and
   // anything else after the destination invalidates the def
-  if (r < n && src[r] !== '\n') return null;
-  const next = r < n ? r + 1 : n;
-  return { label, href: unescapePunct(dest), title, raw: src.slice(pos, r), next };
+  if (r < total && txt[r] !== '\n') return null;
+  const next = r < total ? r + 1 : total;
+  return { label, href: unescapePunct(dest), title, raw: txt.slice(off, r), next };
 }
 
 // Strip one blockquote marker from a line: the whitespace after the
 // > is expanded starting at the marker's column, then the marker and
 // one following space are removed.
 function stripQuoteLine(line) {
-  const m = /^( {0,3}>)([ \t]+)?(.*)$/.exec(line);
-  if (!m) return line;
-  const expanded = expandWS(m[2] || '', m[1].length);
-  const after = m[1] + expanded + m[3];
-  return after.replace(/^ {0,3}>[ \t]?/, '');
+  let i = 0;
+  while (i < line.length && line[i] === ' ' && i < 3) i++;
+  if (i >= line.length || line[i] !== '>') return line;
+  const marker = line.slice(0, i + 1);
+  let j = i + 1;
+  while (j < line.length && (line[j] === ' ' || line[j] === '\t')) j++;
+  const expanded = expandWS(line.slice(i + 1, j), marker.length);
+  const rest = line.slice(j);
+  const after = marker + expanded + rest;
+  // remove the marker and one following space/tab from the expanded line
+  let k = 0;
+  while (k < after.length && after[k] === ' ' && k < 3) k++;
+  if (after[k] === '>') {
+    let end = k + 1;
+    if (end < after.length && (after[end] === ' ' || after[end] === '\t')) end++;
+    return after.slice(end);
+  }
+  return after;
 }
 
 // The innermost last paragraph/text block of a block list,
@@ -1985,18 +2029,18 @@ function stripQuoteLine(line) {
 // continuation lines belong to the deepest paragraph, not to the
 // outer quote or list.
 function innermostPara(blocks) {
-  if (!blocks || !blocks.length) return null;
-  let b = blocks[blocks.length - 1];
-  while (b) {
-    if (b.type === 'para' || b.type === 'text') return b;
-    if (b.type === 'quote' && b.blocks && b.blocks.length) {
-      b = b.blocks[b.blocks.length - 1];
+  if (blocks == null || blocks.length === 0) return null;
+  let current = blocks[blocks.length - 1];
+  while (current != null) {
+    if (current.type === 'para' || current.type === 'text') return current;
+    if (current.type === 'quote' && current.blocks != null && current.blocks.length > 0) {
+      current = current.blocks[current.blocks.length - 1];
       continue;
     }
-    if (b.type === 'list' && b.items && b.items.length) {
-      const it = b.items[b.items.length - 1];
-      if (it.blocks && it.blocks.length) {
-        b = it.blocks[it.blocks.length - 1];
+    if (current.type === 'list' && current.items != null && current.items.length > 0) {
+      const lastItem = current.items[current.items.length - 1];
+      if (lastItem.blocks != null && lastItem.blocks.length > 0) {
+        current = lastItem.blocks[lastItem.blocks.length - 1];
         continue;
       }
     }
