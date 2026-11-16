@@ -2366,9 +2366,32 @@ function tryTable(src, pos) {
   const rows = [];
   let p = dle + 1;
   while (p < n) {
-    if (isBlankLine(src, p)) break;
-    if (startsBlock(src, p)) break;
+    // marked's table body regex stops at a blank line tested as
+    // ` *\n` (spaces only): a tab-only line is NOT blank, it is an
+    // empty row. An indented-code line (4 spaces / tab) also stops
+    // the body (the code alternative in the same lookahead).
     const rle = lineEnd(src, p);
+    let spacesOnly = rle < n;
+    for (let i = p; i < rle && spacesOnly; i++) {
+      if (src[i] !== ' ') spacesOnly = false;
+    }
+    if (spacesOnly) break;
+    // indented code (marked's code alternative: 4 spaces, or up
+    // to 3 spaces + tab, followed by a non-newline character) also
+    // stops the body — but a tab-only line has no character after
+    // the tab, so it is an empty row, not code
+    {
+      let j = p, cols = 0;
+      while (j < rle && src[j] === ' ') { cols++; j++; }
+      let code = false;
+      if (cols >= 4 && j < rle) code = true;
+      else if (j < rle && src[j] === '\t' && cols <= 3) {
+        let k = j + 1;
+        if (k < rle) code = true;
+      }
+      if (code) break;
+    }
+    if (startsBlock(src, p)) break;
     const cells = splitTableRow(src.slice(p, rle));
     while (cells.length < headerCells.length) cells.push('');
     rows.push(cells.slice(0, headerCells.length));
