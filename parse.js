@@ -2432,93 +2432,103 @@ function tryList(src, pos, st) {
 
 // setext underline level for a two-line string "prev\nline"
 function setextLevelOfStr(s) {
-  const i = s.indexOf('\n');
-  if (i === -1) return 0;
-  return setextLevelOf(s, i + 1);
+  const nl = s.indexOf('\n');
+  if (nl === -1) return 0;
+  return setextLevelOf(s, nl + 1);
 }
 
 // split a table row on unescaped pipes; trims the line and drops a
 // leading/trailing pipe cell
 function splitTableRow(line) {
   let s = line.trim();
-  if (s.startsWith('|')) s = s.slice(1);
-  let t = s.trimEnd();
-  let bs = 0;
-  for (let i = t.length - 2; i >= 0 && t[i] === '\\'; i--) bs++;
-  if (t.endsWith('|') && bs % 2 === 0) s = t.slice(0, -1);
+  if (s.charAt(0) === '|') s = s.slice(1);
+  const trimmed = s.trimEnd();
+  let backslashes = 0;
+  for (let i = trimmed.length - 2; i >= 0 && trimmed[i] === '\\'; i--) backslashes++;
+  if (trimmed.endsWith('|') && backslashes % 2 === 0) s = trimmed.slice(0, -1);
   const cells = [];
-  let cur = '', escaped = false;
+  let cur = '';
+  let escaped = false;
   for (let i = 0; i < s.length; i++) {
     const ch = s[i];
-    if (escaped) { cur += ch; escaped = false; continue; }
-    if (ch === '\\') { cur += ch; escaped = true; continue; }
-    if (ch === '|') { cells.push(cur.trim()); cur = ''; continue; }
-    cur += ch;
+    if (escaped) {
+      cur += ch;
+      escaped = false;
+    } else if (ch === '\\') {
+      cur += ch;
+      escaped = true;
+    } else if (ch === '|') {
+      cells.push(cur.trim());
+      cur = '';
+    } else {
+      cur += ch;
+    }
   }
   cells.push(cur.trim());
   // marked's de(): an escaped pipe in a cell becomes a plain pipe
   // before inline parsing (so `a \| b` in a code span renders as
   // a | b, and the pipe does not split the cell)
-  return cells.map((c) => c.replace(/\\\|/g, '|'));
+  return cells.map((cell) => cell.replace(/\\\|/g, '|'));
 }
 
 // does a table start at pos (header line + delimiter line with the
 // same cell count)? returns the parsed table or null
-function tryTable(src, pos) {
-  const n = src.length;
-  if (indentOf(src, pos).cols > 3) return null;
-  const le = lineEnd(src, pos);
-  const headerLine = src.slice(pos, le);
+function tryTable(txt, off) {
+  const total = txt.length;
+  if (indentOf(txt, off).cols > 3) return null;
+  const le = lineEnd(txt, off);
+  const headerLine = txt.slice(off, le);
   const dpos = le + 1;
-  if (dpos >= n) return null;
-  if (indentOf(src, dpos).cols > 3) return null;
-  const dle = lineEnd(src, dpos);
-  const delimLine = src.slice(dpos, dle);
+  if (dpos >= total) return null;
+  if (indentOf(txt, dpos).cols > 3) return null;
+  const dle = lineEnd(txt, dpos);
+  const delimLine = txt.slice(dpos, dle);
   // marked's tableDelimiter: a bare --- after a paragraph is a
   // setext heading, not a table — the delimiter row must contain
   // a : or a |
-  if (!/[:|]/.test(delimLine)) return null;
+  if (delimLine.indexOf(':') === -1 && delimLine.indexOf('|') === -1) return null;
   const headerCells = splitTableRow(headerLine);
   const delimCells = splitTableRow(delimLine);
-  if (!headerCells.length || headerCells.length !== delimCells.length) return null;
+  if (headerCells.length === 0 || headerCells.length !== delimCells.length) return null;
   const aligns = [];
   for (const d of delimCells) {
     const t = d.trim();
     if (!/^:?-+:?$/.test(t)) return null;
-    aligns.push(t[0] === ':' && t[t.length - 1] === ':' ? 'center'
-      : t[t.length - 1] === ':' ? 'right'
-      : t[0] === ':' ? 'left' : null);
+    let align = null;
+    if (t.charAt(0) === ':' && t.charAt(t.length - 1) === ':') align = 'center';
+    else if (t.charAt(t.length - 1) === ':') align = 'right';
+    else if (t.charAt(0) === ':') align = 'left';
+    aligns.push(align);
   }
   const rows = [];
   let p = dle + 1;
-  while (p < n) {
+  while (p < total) {
     // marked's table body regex stops at a blank line tested as
     // ` *\n` (spaces only): a tab-only line is NOT blank, it is an
     // empty row. An indented-code line (4 spaces / tab) also stops
     // the body (the code alternative in the same lookahead).
-    const rle = lineEnd(src, p);
-    let spacesOnly = rle < n;
+    const rle = lineEnd(txt, p);
+    let spacesOnly = rle < total;
     for (let i = p; i < rle && spacesOnly; i++) {
-      if (src[i] !== ' ') spacesOnly = false;
+      if (txt[i] !== ' ') spacesOnly = false;
     }
     if (spacesOnly) break;
     // indented code (marked's code alternative: 4 spaces, or up
     // to 3 spaces + tab, followed by a non-newline character) also
     // stops the body — but a tab-only line has no character after
     // the tab, so it is an empty row, not code
-    {
-      let j = p, cols = 0;
-      while (j < rle && src[j] === ' ') { cols++; j++; }
-      let code = false;
-      if (cols >= 4 && j < rle) code = true;
-      else if (j < rle && src[j] === '\t' && cols <= 3) {
-        let k = j + 1;
-        if (k < rle) code = true;
-      }
-      if (code) break;
+    let j = p;
+    let cols = 0;
+    while (j < rle && txt[j] === ' ') {
+      cols++;
+      j++;
     }
-    if (startsBlock(src, p)) break;
-    const cells = splitTableRow(src.slice(p, rle));
+    let isCode = false;
+    if (cols >= 4 && j < rle) isCode = true;
+    else if (j < rle && txt[j] === '\t' && cols <= 3 && j + 1 < rle) isCode = true;
+    if (isCode) break;
+    if (startsBlock(txt, p)) break;
+    const cells = splitTableRow(txt.slice(p, rle));
     while (cells.length < headerCells.length) cells.push('');
     rows.push(cells.slice(0, headerCells.length));
     p = rle + 1;
@@ -2530,148 +2540,182 @@ function tryTable(src, pos) {
 }
 
 // setext underline level (1 for =, 2 for -) or 0
-function setextLevelOf(src, pos) {
-  const ind = indentOf(src, pos);
+function setextLevelOf(txt, off) {
+  const ind = indentOf(txt, off);
   if (ind.cols > 3) return 0;
-  const le = lineEnd(src, pos);
-  const c = src[ind.next];
+  const le = lineEnd(txt, off);
+  const c = txt[ind.next];
   if (c !== '=' && c !== '-') return 0;
   let i = ind.next;
-  while (i < le && src[i] === c) i++;
-  while (i < le && (src[i] === ' ' || src[i] === '\t')) i++;
-  return i === le && i > ind.next ? (c === '=' ? 1 : 2) : 0;
+  while (i < le && txt[i] === c) i++;
+  while (i < le && (txt[i] === ' ' || txt[i] === '\t')) i++;
+  if (i !== le || i === ind.next) return 0;
+  return c === '=' ? 1 : 2;
 }
 
 // paragraph (with setext heading and table detection); always matches
-function parseParagraph(src, pos, st) {
-  const n = src.length;
+function parseParagraph(txt, off, st) {
+  const total = txt.length;
   const lines = [];
-  let p = pos;
+  let scan = off;
   let setext = 0;
   let table = null;
-  while (p < n) {
-    const le = lineEnd(src, p);
-    const line = src.slice(p, le);
+  while (scan < total) {
+    const le = lineEnd(txt, scan);
+    const line = txt.slice(scan, le);
     // a whitespace-only line breaks the paragraph only when it is
     // followed by a newline (marked's lookahead is [ \t]+\n); a
     // trailing whitespace-only line at the end of the input is
     // paragraph content
-    if (isBlankLine(src, p) && le < n) break;
+    if (isBlankLine(txt, scan) && le < total) break;
     if (lines.length > 0) {
-      const sl = setextLevelOf(src, p);
-      if (sl) { setext = sl; p = le + 1; break; }
-      if (lines.length === 1) {
-        const t = tryTable(src, pos);
-        if (t) { table = t; p = t.next; break; }
+      const sl = setextLevelOf(txt, scan);
+      if (sl !== 0) {
+        setext = sl;
+        scan = le + 1;
+        break;
       }
-      if (tryTable(src, p)) break;
-      if (startsBlock(src, p)) break;
+      if (lines.length === 1) {
+        const t = tryTable(txt, off);
+        if (t !== null) {
+          table = t;
+          scan = t.next;
+          break;
+        }
+      }
+      if (tryTable(txt, scan) !== null) break;
+      if (startsBlock(txt, scan)) break;
     }
     lines.push(line);
-    p = le + 1;
+    scan = le + 1;
   }
-  if (table) return { block: table.block, next: table.next };
-  if (setext) {
+  if (table !== null) return { block: table.block, next: table.next };
+  if (setext !== 0) {
     return {
       block: { type: 'heading', level: setext, text: lines.join('\n').trim() },
-      next: p,
+      next: scan,
     };
   }
-  return { block: { type: 'para', text: lines.join('\n') }, next: p };
+  return { block: { type: 'para', text: lines.join('\n') }, next: scan };
 }
 
 // main block lexer. top=false (inside a list item) turns paragraphs
 // into single-line text tokens, which merge with following text and
 // indented-code tokens the way marked does.
-function lexBlocks(src, st, top, info) {
+function lexBlocks(txt, st, top, info) {
   if (top === undefined) top = true;
   const blocks = [];
-  const n = src.length;
-  let pos = 0;
-  let sawBlank = false;
-  while (pos < n) {
-    if (src[pos] === '\n') {
-      if (info && blocks.length > 0) info.blankBetween = true;
-      sawBlank = true;
-      pos++;
+  const total = txt.length;
+  let cursor = 0;
+  let blankSeen = false;
+  while (cursor < total) {
+    if (txt[cursor] === '\n') {
+      if (info !== undefined && info !== null && blocks.length > 0) info.blankBetween = true;
+      blankSeen = true;
+      cursor++;
       continue;
     }
-    const le = lineEnd(src, pos);
-    if (isBlankLine(src, pos)) {
-      if (info && blocks.length > 0) info.blankBetween = true;
-      sawBlank = true;
-      pos = le + 1;
+    const lineStop = lineEnd(txt, cursor);
+    if (isBlankLine(txt, cursor)) {
+      if (info !== undefined && info !== null && blocks.length > 0) info.blankBetween = true;
+      blankSeen = true;
+      cursor = lineStop + 1;
       continue;
     }
-    let r;
-    let block = null;
-    let next = pos;
-    let isCode = false;
-    let def = null;
-    if ((r = tryFences(src, pos))) { block = r.block; next = r.next; }
-    else if ((r = tryHeading(src, pos))) { block = r.block; next = r.next; }
-    else if (isHrLine(src, pos)) { block = { type: 'hr' }; next = le + 1; }
-    else if ((r = tryBlockquote(src, pos, st))) { block = r.block; next = r.next; }
-    else if ((r = tryList(src, pos, st))) { block = r.block; next = r.next; }
-    else if ((r = tryHtmlBlock(src, pos))) { block = r.block; next = r.next; }
-    else if ((def = tryDef(src, pos))) { next = def.next; }
-    else if ((r = tryIndentedCode(src, pos))) { block = r.block; next = r.next; isCode = true; }
-    else if ((r = tryTable(src, pos))) { block = r.block; next = r.next; }
-    else if (top) { r = parseParagraph(src, pos, st); block = r.block; next = r.next; }
-    else {
+    let res = null;
+    let blk = null;
+    let nxt = cursor;
+    let codeFlag = false;
+    let definition = null;
+    if ((res = tryFences(txt, cursor)) !== null) {
+      blk = res.block;
+      nxt = res.next;
+    } else if ((res = tryHeading(txt, cursor)) !== null) {
+      blk = res.block;
+      nxt = res.next;
+    } else if (isHrLine(txt, cursor)) {
+      blk = { type: 'hr' };
+      nxt = lineStop + 1;
+    } else if ((res = tryBlockquote(txt, cursor, st)) !== null) {
+      blk = res.block;
+      nxt = res.next;
+    } else if ((res = tryList(txt, cursor, st)) !== null) {
+      blk = res.block;
+      nxt = res.next;
+    } else if ((res = tryHtmlBlock(txt, cursor)) !== null) {
+      blk = res.block;
+      nxt = res.next;
+    } else if ((definition = tryDef(txt, cursor)) !== null) {
+      nxt = definition.next;
+    } else if ((res = tryIndentedCode(txt, cursor)) !== null) {
+      blk = res.block;
+      nxt = res.next;
+      codeFlag = true;
+    } else if ((res = tryTable(txt, cursor)) !== null) {
+      blk = res.block;
+      nxt = res.next;
+    } else if (top) {
+      res = parseParagraph(txt, cursor, st);
+      blk = res.block;
+      nxt = res.next;
+    } else {
       // inside a list item: a text line followed by a setext
       // underline is a heading (marked tries lheading before the
       // text rule even when top is false)
-      const sl = setextLevelOf(src, le + 1);
-      if (sl && !isBlankLine(src, pos)) {
-        block = { type: 'heading', level: sl, text: src.slice(pos, le).trim() };
-        next = lineEnd(src, le + 1) + 1;
+      const sl = setextLevelOf(txt, lineStop + 1);
+      if (sl !== 0 && !isBlankLine(txt, cursor)) {
+        blk = { type: 'heading', level: sl, text: txt.slice(cursor, lineStop).trim() };
+        nxt = lineEnd(txt, lineStop + 1) + 1;
       } else {
-        block = { type: 'text', text: src.slice(pos, le) };
-        next = le + 1;
+        blk = { type: 'text', text: txt.slice(cursor, lineStop) };
+        nxt = lineStop + 1;
       }
     }
-    const prev = blocks.length ? blocks[blocks.length - 1] : null;
-    const prevIsText = !sawBlank && prev && (prev.type === 'para' || prev.type === 'text');
-    if (def) {
-      if (prevIsText) {
+    const previous = blocks.length > 0 ? blocks[blocks.length - 1] : null;
+    const prevText = blankSeen === false && previous !== null
+      && (previous.type === 'para' || previous.type === 'text');
+    if (definition !== null) {
+      if (prevText) {
         // a def after a paragraph is literal text, not a definition
-        prev.text += '\n' + def.raw;
-      } else if (!(def.label in st.refs)) {
-        st.refs[def.label] = { href: def.href, title: def.title };
+        previous.text += '\n' + definition.raw;
+      } else if (!(definition.label in st.refs)) {
+        st.refs[definition.label] = { href: definition.href, title: definition.title };
       }
-      pos = next;
+      cursor = nxt;
       continue;
     }
-    if (!block) { pos = next; continue; }
-    if (isCode && prevIsText) {
+    if (blk === null) {
+      cursor = nxt;
+      continue;
+    }
+    if (codeFlag && prevText) {
       // an indented code block right after a paragraph is merged
       // into it (its text, dedented, appended after a newline)
-      prev.text += '\n' + block.text;
-      pos = next;
+      previous.text += '\n' + blk.text;
+      cursor = nxt;
       continue;
     }
-    if ((block.type === 'para' || block.type === 'text') && !sawBlank
-      && prev && (prev.type === 'quote' || prev.type === 'list')
-      && !(prev.type === 'quote' && prev.endedBlank)) {
+    if ((blk.type === 'para' || blk.type === 'text') && blankSeen === false
+      && previous !== null && (previous.type === 'quote' || previous.type === 'list')
+      && !(previous.type === 'quote' && previous.endedBlank)) {
       // a lazy paragraph line after a (nested) blockquote or list
       // is a continuation of its innermost paragraph, not a new block
-      const inner = innermostPara([prev]);
-      if (inner) {
-        inner.text += '\n' + block.text;
-        pos = next;
+      const inner = innermostPara([previous]);
+      if (inner !== null) {
+        inner.text += '\n' + blk.text;
+        cursor = nxt;
         continue;
       }
     }
-    if (block.type === 'text' && !sawBlank && prev && prev.type === 'text') {
-      prev.text += '\n' + block.text;
-      pos = next;
+    if (blk.type === 'text' && blankSeen === false && previous !== null && previous.type === 'text') {
+      previous.text += '\n' + blk.text;
+      cursor = nxt;
       continue;
     }
-    blocks.push(block);
-    sawBlank = false;
-    pos = next;
-    if (pos <= 0) pos = le + 1;
+    blocks.push(blk);
+    blankSeen = false;
+    cursor = nxt;
+    if (cursor <= 0) cursor = lineStop + 1;
   }
   return blocks;
 }
@@ -2683,8 +2727,14 @@ function lexBlocks(src, st, top, info) {
 
 function renderBlocks(blocks, st, tight) {
   let out = '';
-  for (const b of blocks) out += renderBlock(b, st, tight);
+  for (const blk of blocks) out += renderBlock(blk, st, tight);
   return out;
+}
+
+function taskCheckbox(task) {
+  if (task === 'checked') return '<input checked="" disabled="" type="checkbox"> ';
+  if (task === 'unchecked') return '<input disabled="" type="checkbox"> ';
+  return '';
 }
 
 function renderBlock(b, st, tight) {
@@ -2692,31 +2742,18 @@ function renderBlock(b, st, tight) {
     case 'text': {
       // a paragraph-like line inside a tight list item: bare inline
       // content, no <p> wrapper, no trailing newline
-      const inner = inlineHtml(b.text, st);
-      const cb = b.task
-        ? (b.task === 'checked'
-          ? '<input checked="" disabled="" type="checkbox"> '
-          : '<input disabled="" type="checkbox"> ')
-        : '';
-      return cb + inner;
+      return taskCheckbox(b.task) + inlineHtml(b.text, st);
     }
     case 'para': {
       const inner = inlineHtml(b.text, st);
-      const cb = b.task
-        ? (b.task === 'checked'
-          ? '<input checked="" disabled="" type="checkbox"> '
-          : '<input disabled="" type="checkbox"> ')
-        : '';
+      const cb = taskCheckbox(b.task);
       if (tight) return cb + inner;
       return '<p>' + cb + inner + '</p>\n';
     }
     case 'heading':
-      return '<h' + b.level + '>' + inlineHtml(b.text, st)
-        + '</h' + b.level + '>\n';
+      return '<h' + b.level + '>' + inlineHtml(b.text, st) + '</h' + b.level + '>\n';
     case 'code': {
-      const lang = b.lang
-        ? ' class="language-' + escKeepRefs(b.lang) + '"'
-        : '';
+      const lang = b.lang ? ' class="language-' + escKeepRefs(b.lang) + '"' : '';
       // marked's code renderer strips one trailing newline from the
       // text and appends one; an empty text stays empty
       const body = b.text ? esc(b.text.replace(/\n$/, '') + '\n') : '';
@@ -2727,18 +2764,13 @@ function renderBlock(b, st, tight) {
     case 'html':
       return b.text;
     case 'quote':
-      return '<blockquote>\n' + renderBlocks(b.blocks, st, false)
-        + '</blockquote>\n';
+      return '<blockquote>\n' + renderBlocks(b.blocks, st, false) + '</blockquote>\n';
     case 'list': {
       const tag = b.ordered ? 'ol' : 'ul';
-      const start = b.ordered && b.start !== 1
-        ? ' start="' + b.start + '"'
-        : '';
+      const start = b.ordered && b.start !== 1 ? ' start="' + b.start + '"' : '';
       let out = '<' + tag + start + '>\n';
       for (const item of b.items) {
-        out += '<li>';
-        out += renderBlocks(item.blocks, st, b.tight);
-        out += '</li>\n';
+        out += '<li>' + renderBlocks(item.blocks, st, b.tight) + '</li>\n';
       }
       return out + '</' + tag + '>\n';
     }
@@ -2746,18 +2778,18 @@ function renderBlock(b, st, tight) {
       let out = '<table>\n<thead>\n<tr>\n';
       for (let i = 0; i < b.header.length; i++) {
         const a = b.aligns[i];
-        out += '<th' + (a ? ' align="' + a + '"' : '') + '>'
-          + inlineHtml(b.header[i], st) + '</th>\n';
+        const alignAttr = a ? ' align="' + a + '"' : '';
+        out += '<th' + alignAttr + '>' + inlineHtml(b.header[i], st) + '</th>\n';
       }
       out += '</tr>\n</thead>\n';
-      if (b.rows.length) {
+      if (b.rows.length > 0) {
         out += '<tbody>';
         for (const row of b.rows) {
           out += '<tr>\n';
           for (let i = 0; i < row.length; i++) {
             const a = b.aligns[i];
-            out += '<td' + (a ? ' align="' + a + '"' : '') + '>'
-              + inlineHtml(row[i], st) + '</td>\n';
+            const alignAttr = a ? ' align="' + a + '"' : '';
+            out += '<td' + alignAttr + '>' + inlineHtml(row[i], st) + '</td>\n';
           }
           out += '</tr>\n';
         }
@@ -2765,8 +2797,9 @@ function renderBlock(b, st, tight) {
       }
       return out + '</table>\n';
     }
+    default:
+      return '';
   }
-  return '';
 }
 
 // ------------------------------------------------------------------
@@ -2774,10 +2807,10 @@ function renderBlock(b, st, tight) {
 // ------------------------------------------------------------------
 
 export function parse(markdown) {
-  const st = { refs: Object.create(null), inLink: false, linkEmitted: false };
-  const src = String(markdown).replace(/\r\n?/g, '\n');
-  const blocks = lexBlocks(src, st);
-  return renderBlocks(blocks, st, false);
+  const state = { refs: Object.create(null), inLink: false, linkEmitted: false };
+  const normalized = String(markdown).replace(/\r\n?/g, '\n');
+  const blocks = lexBlocks(normalized, state);
+  return renderBlocks(blocks, state, false);
 }
 
 export default parse;
