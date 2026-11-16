@@ -2556,20 +2556,6 @@ function lexBlocks(src, st, top, info) {
         continue;
       }
     }
-    if (block.type === 'quote' && !sawBlank && prev
-      && (prev.type === 'quote' || prev.type === 'list')
-      && !(prev.type === 'quote' && prev.endedBlank)
-      && block.blocks.length === 1
-      && (block.blocks[0].type === 'para' || block.blocks[0].type === 'text')) {
-      // a single-paragraph nested quote right after a quote/list is
-      // the same lazy continuation one level deeper (>>baz after >> foo)
-      const inner = innermostPara([prev]);
-      if (inner) {
-        inner.text += '\n' + block.blocks[0].text;
-        pos = next;
-        continue;
-      }
-    }
     if (block.type === 'text' && !sawBlank && prev && prev.type === 'text') {
       prev.text += '\n' + block.text;
       pos = next;
