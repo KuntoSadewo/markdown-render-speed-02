@@ -1991,21 +1991,33 @@ function tryBlockquote(src, pos, st) {
     // paragraph (its dedented text appended after a newline); a
     // paragraph (or single-paragraph quote) at the start of a chunk
     // after a nested quote or list is a lazy continuation of its
-    // innermost paragraph (a > line never continues a plain para)
+    // innermost paragraph (a > line never continues a plain para).
+    // At most two merges per chunk: a leading paragraph, then a
+    // following single-paragraph nested quote that continues the
+    // same paragraph (a second paragraph after a blank line inside
+    // the chunk must stay separate).
     if (blocks.length > 0 && chunkBlocks.length > 0 && !prevEndedBlank) {
       const last = blocks[blocks.length - 1];
-      const first = chunkBlocks[0];
       const inner = innermostPara([last]);
-      if (inner && (first.type === 'para' || first.type === 'text'
-        || (first.type === 'code' && !first.fenced))) {
-        inner.text += '\n' + first.text;
-        chunkBlocks.shift();
-      } else if (inner && first.type === 'quote'
-        && (last.type === 'quote' || last.type === 'list')
-        && first.blocks.length === 1
-        && (first.blocks[0].type === 'para' || first.blocks[0].type === 'text')) {
-        inner.text += '\n' + first.blocks[0].text;
-        chunkBlocks.shift();
+      if (inner) {
+        const first = chunkBlocks[0];
+        if (first.type === 'para' || first.type === 'text'
+          || (first.type === 'code' && !first.fenced)) {
+          inner.text += '\n' + first.text;
+          chunkBlocks.shift();
+        }
+        const next = chunkBlocks[0];
+        if (next && next.type === 'quote'
+          && (last.type === 'quote' || last.type === 'list')
+          && next.blocks.length >= 1
+          && (next.blocks[0].type === 'para' || next.blocks[0].type === 'text')) {
+          inner.text += '\n' + next.blocks[0].text;
+          // the rest of the new quote's blocks belong to the same
+          // quote: append them to the old quote's blocks (only
+          // when the old block is itself a quote with a blocks array)
+          if (last.type === 'quote') last.blocks.push(...next.blocks.slice(1));
+          chunkBlocks.shift();
+        }
       }
     }
     blocks = blocks.concat(chunkBlocks);
