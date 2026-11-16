@@ -640,13 +640,95 @@ function parseLinkSuffix(s, j, rawLabel, refs) {
 }
 
 function processEmphasis(nodes, delims) {
-  let openersBottom = -1;
+  // openers_bottom is per delimiter character AND run-length class (1 or
+  // 2+): a '*' closer that finds no '*' opener must not block a later '_'
+  // closer from reaching its '_' opener below (doc-21: '__a *b*c*__' —
+  // the stray '*' after c sets the '*' bottom, but the '__' closer must
+  // still find the '__' opener), nor a later '**' closer from reaching
+  // its '**' opener (doc-11: after the poisoned inner '*' fails, the
+  // outer '**' closer must still find the '**' opener). A single shared
+  // bottom wrongly made those strongs fail to form.
+  const openersBottom = {};
+  const bottomKey = (c, len) => c + (len >= 2 ? '2' : '1');
+  const getBottom = (c, len) => {
+    const k = bottomKey(c, len);
+    return k in openersBottom ? openersBottom[k] : -1;
+  };
+  // An emphasis node is 'poison' when its opener cannot close and its
+  // closer can open (preceded by whitespace, followed directly by text).
+  // A poisoned node blocks an outer emphasis of a DIFFERENT kind
+  // (poisoned em blocks a strong, poisoned strong blocks an em; same kind
+  // does not block: '*a *b*c*' forms the outer <em>), and it blocks a
+  // match that would steal a delimiter from a longer opener (a len-1
+  // closer matching a len-2 opener). A stray delimiter text node after
+  // the poisoned node shields the match (doc-01: the stray '*' lets the
+  // outer strong form even though it spans the poisoned '*so*' em).
+  const spansPoison = (oi2, ci2, outerTag, openerLen, use, c, closerLen) => {
+    const isShieldNode = (nd) => typeof nd.s === 'string' && nd.s.length > 0 && [...nd.s].every((ch) => ch === c);
+    const span = nodes.slice(oi2 + 1, ci2);
+    // a stray delimiter text node inside the span cancels the leftover
+    // exception below: in '**removes example *input **parse**parse*
+    // release**' the failed '*' must not let the '*input...*' em form
+    // with the trailing '**' (the outer '**...**' strong must win)
+    let hasStray = false;
+    for (const nd of span) if (isShieldNode(nd)) { hasStray = true; break; }
+    // A closer run with leftover delimiters (len > use) is not blocked by
+    // poison, unless a stray delimiter sits in the span: the extra
+    // delimiter absorbs it ('**a *b*c***' forms the strong even though
+    // it spans the poisoned '*b*' em).
+    if (closerLen > use && !hasStray) return false;
+    const poisoned = [];
+    const walk = (arr, topIdx) => {
+      for (const nd of arr) {
+        if (!nd) continue;
+        // poison only applies within the same delimiter character: a '*'
+        // em never blocks a '__' strong ('__a *b*c*__' forms the strong)
+        if (nd.poison && nd.pc === c) poisoned.push({ topIdx, t: nd.t });
+        if (nd.ch) walk(nd.ch, topIdx);
+      }
+    };
+    span.forEach((nd, i) => walk([nd], i));
+    for (const p of poisoned) {
+      const blocks = (p.t !== outerTag) || (openerLen > use);
+      if (!blocks) continue;
+      // a stray delimiter text node shields only a strong (use 2), never
+      // an em: in '**removes example *input **parse**parse* release**'
+      // the failed '*' must not let the '*input...*' em form
+      let shielded = false;
+      if (use === 2) {
+        for (let r = p.topIdx + 1; r < span.length; r++) {
+          if (isShieldNode(span[r])) { shielded = true; break; }
+        }
+      }
+      if (!shielded) return true;
+    }
+    return false;
+  };
+  // true when the span contains an emphasis node whose closer could also
+  // open (its closer was followed directly by text): a leftover closer
+  // run then stays inside the outer emphasis ('**a *b*c***' keeps the
+  // extra '*' inside the <strong>), otherwise it goes after it
+  const spanHasCco = (oi2, ci2, closerNode) => {
+    const walk = (arr) => {
+      for (const nd of arr) {
+        if (!nd) continue;
+        // an emphasis node whose closer is this same closer run (cm-417:
+        // '******'/'*********' consumed progressively) does not count:
+        // its leftover stays outside, it is not a separate inner em
+        if (nd.cco && nd.cn !== closerNode) return true;
+        if (nd.ch && walk(nd.ch)) return true;
+      }
+      return false;
+    };
+    return walk(nodes.slice(oi2 + 1, ci2));
+  };
   let cur = 0;
   while (cur < delims.length) {
     const closer = delims[cur];
     if (closer.c === '[' || closer.c === '![' || !closer.canClose) { cur++; continue; }
     let oi = cur - 1, found = -1;
-    while (oi > openersBottom) {
+    const ci2 = nodes.indexOf(closer.node);
+    while (oi > getBottom(closer.c, closer.len)) {
       const op = delims[oi];
       if (op.c === '[' || op.c === '![') { oi--; continue; }
       // odd-match rule (only for * and _): a match is blocked when the sum
@@ -654,22 +736,31 @@ function processEmphasis(nodes, delims) {
       // themselves multiples of 3 (foo***bar***baz forms <em><strong>)
       const odd = closer.c !== '~' && (op.canClose || closer.canOpen) && ((op.len + closer.len) % 3 === 0) && (op.len % 3 !== 0);
       // strikethrough runs must have equal length (~~ needs ~~, ~ needs ~)
-      if (op.c === closer.c && op.canOpen && !odd && (closer.c !== '~' || op.len === closer.len)) { found = oi; break; }
+      if (op.c === closer.c && op.canOpen && !odd && (closer.c !== '~' || op.len === closer.len)) {
+        // a match spanning a poisoned node is skipped: this opener cannot
+        // pair with this closer, try an earlier one
+        const useHere = (op.len >= 2 && closer.len >= 2) ? 2 : 1;
+        if (closer.c !== '~' && ci2 >= 0) {
+          const oi2h = nodes.indexOf(op.node);
+          if (oi2h >= 0 && oi2h < ci2 && spansPoison(oi2h, ci2, useHere === 2 ? 'strong' : 'em', op.len, useHere, closer.c, closer.len)) { oi--; continue; }
+        }
+        found = oi;
+        break;
+      }
       oi--;
     }
     if (found < 0) {
-      if (!closer.canOpen) openersBottom = cur - 1;
+      if (!closer.canOpen) openersBottom[bottomKey(closer.c, closer.len)] = cur - 1;
       cur++;
       continue;
     }
     const opener = delims[found];
     const oi2 = nodes.indexOf(opener.node);
-    const ci2 = nodes.indexOf(closer.node);
     if (oi2 < 0 || ci2 < 0 || ci2 <= oi2) {
       // opener is inside an already-formed emphasis node: drop it so the
       // closer can try an earlier opener instead of skipping the match
       delims.splice(found, 1);
-      if (openersBottom > found) openersBottom--;
+      for (const k in openersBottom) if (openersBottom[k] > found) openersBottom[k]--;
       cur--;
       continue;
     }
@@ -681,16 +772,46 @@ function processEmphasis(nodes, delims) {
     closer.len -= use;
     const children = nodes.slice(oi2 + 1, ci2);
     const emNode = { t: tag, ch: children };
+    // any * / _ emphasis (em or strong) can poison an outer emphasis of
+    // a different kind; a ~~ strikethrough (del) never does (doc-02:
+    // '_branch ... ~~any *input every*~~_' must form the outer <em>
+    // around the <del>). pc is the delimiter character (poison is
+    // per-character), cco records whether this node's closer could also
+    // open (it decides where a leftover closer run goes).
+    if (closer.c !== '~') {
+      emNode.poison = !opener.canClose && closer.canOpen;
+      emNode.pc = closer.c;
+      emNode.cco = closer.canOpen;
+      emNode.cn = closer.node;
+    }
+    // A leftover closer run goes inside the emphasis only for a strong
+    // (use 2) when the span holds an emphasis node whose closer could also
+    // open ('**a *b*c***' keeps the extra '*' inside the <strong>) and
+    // no earlier opener of the same character is still waiting: in
+    // doc-05 ('__because may __old 2*3*4 and____') the leftover '__'
+    // must stay a delimiter to close the outer '__...__' strong. For an
+    // em (use 1) it always goes after it ('*uses state
+    // *callback*markdown**' -> '<em>...markdown</em>*').
+    let hasEarlierOpener = false;
+    for (let q = 0; q < found; q++) {
+      const d = delims[q];
+      if (d.c === closer.c && d.canOpen) { hasEarlierOpener = true; break; }
+    }
+    const closerLeftoverInside = use === 2 && closer.node.s !== '' && !hasEarlierOpener && spanHasCco(oi2, ci2, closer.node);
     const rep = [];
     if (opener.node.s !== '') rep.push(opener.node);
     rep.push(emNode);
-    if (closer.node.s !== '') rep.push(closer.node);
+    if (closer.node.s !== '' && !closerLeftoverInside) rep.push(closer.node);
+    if (closerLeftoverInside) emNode.ch.push(closer.node);
     nodes.splice(oi2, ci2 - oi2 + 1, ...rep);
     // Delimiters strictly between the opener and the closer are now inside
     // the formed emphasis node: they can no longer match a delimiter
     // outside it (cm-470: the middle * must not pair with the final *).
     // Remove them, from the end backwards so indices stay valid.
     for (let q = cur - 1; q > found; q--) delims.splice(q, 1);
+    // a closer leftover that went inside is now literal content: its
+    // delimiter can no longer match, remove it from the stack
+    if (closerLeftoverInside) delims.splice(found + 1, 1);
     // the closer is now immediately after the opener
     cur = found + 1;
     // remove the closer first, then the opener: removing the opener first
