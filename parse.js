@@ -2053,53 +2053,64 @@ function innermostPara(blocks) {
 // marked: each chunk is lazy lines (only after a paragraph chunk)
 // followed by > lines; a chunk that ends in a code block, heading,
 // hr, HTML block or table stops the quote.
-function tryBlockquote(src, pos, st) {
-  const ind = indentOf(src, pos);
-  if (ind.cols > 3 || src[ind.next] !== '>') return null;
-  const n = src.length;
-  let p = pos;
-  let blocks = [];
-  let firstChunk = true;
+function tryBlockquote(txt, off, st) {
+  const ind = indentOf(txt, off);
+  if (ind.cols > 3 || txt[ind.next] !== '>') return null;
+  const total = txt.length;
+  let cursor = off;
+  let acc = [];
+  let first = true;
   // a quote whose content is only a link definition still exists
   // (marked emits an empty blockquote); track marker lines seen
-  let sawAny = false;
+  let seen = false;
   // a chunk that ends with a blank line (a bare > marker) closes
   // the paragraph: no lazy continuation may follow it
-  let prevChunkEndedBlank = false;
-  while (p < n) {
-    const chunkLines = [];
-    let q = p;
+  let prevBlank = false;
+  while (cursor < total) {
+    const lines = [];
+    let scan = cursor;
     // a lazy line continues the innermost paragraph (which may sit
     // inside a nested quote); a chunk that ended with a blank line
     // closes the paragraph
-    const lastIsPara = !prevChunkEndedBlank && !!innermostPara(blocks);
+    const paraOpen = prevBlank === false && innermostPara(acc) !== null;
     // lazy lines (only after the first chunk, only after a paragraph)
-    if (!firstChunk && lastIsPara) {
-      while (q < n) {
-        const le = lineEnd(src, q);
-        if (isBlankLine(src, q)) break;
-        const lind = indentOf(src, q);
-        if (lind.cols <= 3 && src[lind.next] === '>') break;
-        if (startsBlock(src, q)) break;
-        let line = src.slice(q, le);
+    if (first === false && paraOpen) {
+      while (scan < total) {
+        const le = lineEnd(txt, scan);
+        if (isBlankLine(txt, scan)) break;
+        const lind = indentOf(txt, scan);
+        if (lind.cols <= 3 && txt[lind.next] === '>') break;
+        if (startsBlock(txt, scan)) break;
+        let line = txt.slice(scan, le);
         // a lazy setext underline becomes indented text, not a heading
-        if (/^ {0,3}(?:=+|-+)[ \t]*$/.test(line)) line = '    ' + line.replace(/^ {0,3}/, '');
-        chunkLines.push(line);
-        q = le + 1;
+        let lead = 0;
+        while (lead < line.length && line[lead] === ' ' && lead < 3) lead++;
+        let isSetext = false;
+        if (lead < line.length && (line[lead] === '=' || line[lead] === '-')) {
+          const mark = line[lead];
+          let k = lead;
+          while (k < line.length && line[k] === mark) k++;
+          let t = k;
+          while (t < line.length && (line[t] === ' ' || line[t] === '\t')) t++;
+          if (t === line.length) isSetext = true;
+        }
+        if (isSetext) line = '    ' + line.slice(lead);
+        lines.push(line);
+        scan = le + 1;
       }
     }
     // > lines; a truly blank line ends the blockquote (marked's
     // blockquote block regex requires every line to start with >,
     // so a blank line is never inside one token — a `>` line that
     // looks blank is a marker line, handled above)
-    let sawMarker = false;
-    while (q < n) {
-      const le = lineEnd(src, q);
-      const lind = indentOf(src, q);
-      if (!isBlankLine(src, q) && lind.cols <= 3 && src[lind.next] === '>') {
-        sawMarker = true;
-        chunkLines.push(stripQuoteLine(src.slice(q, le)));
-        q = le + 1;
+    let markerSeen = false;
+    while (scan < total) {
+      const le = lineEnd(txt, scan);
+      const lind = indentOf(txt, scan);
+      if (isBlankLine(txt, scan) === false && lind.cols <= 3 && txt[lind.next] === '>') {
+        markerSeen = true;
+        lines.push(stripQuoteLine(txt.slice(scan, le)));
+        scan = le + 1;
         continue;
       }
       break;
@@ -2107,36 +2118,34 @@ function tryBlockquote(src, pos, st) {
     // no chunk formed: a lazy continuation line for the innermost
     // paragraph (inside a nested quote) is appended directly;
     // never after a chunk that ended with a blank line
-    if (chunkLines.length === 0 && !firstChunk && !prevChunkEndedBlank) {
-      const inner = innermostPara(blocks);
-      if (inner) {
-        const le = lineEnd(src, q);
-        if (q < n && !isBlankLine(src, q)) {
-          const lind = indentOf(src, q);
-          if (!(lind.cols <= 3 && src[lind.next] === '>')
-            && !startsBlock(src, q)) {
-            const line = src.slice(q, le);
-            inner.text += '\n'
-              + (lind.cols >= 4 ? dedentCols(line, 4) : line);
-            p = le + 1;
-            prevChunkEndedBlank = false;
+    if (lines.length === 0 && first === false && prevBlank === false) {
+      const inner = innermostPara(acc);
+      if (inner !== null) {
+        const le = lineEnd(txt, scan);
+        if (scan < total && isBlankLine(txt, scan) === false) {
+          const lind = indentOf(txt, scan);
+          if ((lind.cols <= 3 && txt[lind.next] === '>') === false
+            && startsBlock(txt, scan) === false) {
+            const line = txt.slice(scan, le);
+            inner.text += '\n' + (lind.cols >= 4 ? dedentCols(line, 4) : line);
+            cursor = le + 1;
+            prevBlank = false;
             continue;
           }
         }
       }
     }
-    if (chunkLines.length === 0) break;
+    if (lines.length === 0) break;
     // a chunk of only lazy lines (no > line) is the trailing
     // continuation of a paragraph; anything else needs a marker
-    if (!sawMarker && (firstChunk || !lastIsPara)) break;
-    sawAny = sawAny || sawMarker;
+    if (markerSeen === false && (first === true || paraOpen === false)) break;
+    if (markerSeen) seen = true;
     // did this chunk end with a blank line (a bare > marker)?
     // (save the previous chunk's value first: it guards the merge)
-    const prevEndedBlank = prevChunkEndedBlank;
-    prevChunkEndedBlank = chunkLines.length > 0
-      && chunkLines[chunkLines.length - 1].trim() === '';
-    const sub = chunkLines.join('\n');
-    const chunkBlocks = lexBlocks(sub, st, true);
+    const wasBlank = prevBlank;
+    prevBlank = lines.length > 0 && lines[lines.length - 1].trim() === '';
+    const joined = lines.join('\n');
+    const subBlocks = lexBlocks(joined, st, true);
     // a paragraph that spans chunks is one paragraph; an indented
     // code block at the start of a chunk merges into the preceding
     // paragraph (its dedented text appended after a newline); a
@@ -2147,18 +2156,18 @@ function tryBlockquote(src, pos, st) {
     // following single-paragraph nested quote that continues the
     // same paragraph (a second paragraph after a blank line inside
     // the chunk must stay separate).
-    if (blocks.length > 0 && chunkBlocks.length > 0 && !prevEndedBlank) {
-      const last = blocks[blocks.length - 1];
+    if (acc.length > 0 && subBlocks.length > 0 && wasBlank === false) {
+      const last = acc[acc.length - 1];
       const inner = innermostPara([last]);
-      if (inner) {
-        const first = chunkBlocks[0];
-        if (first.type === 'para' || first.type === 'text'
-          || (first.type === 'code' && !first.fenced)) {
-          inner.text += '\n' + first.text;
-          chunkBlocks.shift();
+      if (inner !== null) {
+        const head = subBlocks[0];
+        if (head.type === 'para' || head.type === 'text'
+          || (head.type === 'code' && head.fenced !== true)) {
+          inner.text += '\n' + head.text;
+          subBlocks.shift();
         }
-        const next = chunkBlocks[0];
-        if (next && next.type === 'quote'
+        const next = subBlocks[0];
+        if (next !== undefined && next.type === 'quote'
           && (last.type === 'quote' || last.type === 'list')
           && next.blocks.length >= 1
           && (next.blocks[0].type === 'para' || next.blocks[0].type === 'text')) {
@@ -2167,21 +2176,21 @@ function tryBlockquote(src, pos, st) {
           // quote: append them to the old quote's blocks (only
           // when the old block is itself a quote with a blocks array)
           if (last.type === 'quote') last.blocks.push(...next.blocks.slice(1));
-          chunkBlocks.shift();
+          subBlocks.shift();
         }
       }
     }
-    blocks = blocks.concat(chunkBlocks);
-    p = q;
-    firstChunk = false;
-    const last = blocks[blocks.length - 1];
-    if (last && (last.type === 'code' || last.type === 'heading'
-      || last.type === 'hr' || last.type === 'html' || last.type === 'table')) break;
+    acc = acc.concat(subBlocks);
+    cursor = scan;
+    first = false;
+    const tail = acc[acc.length - 1];
+    if (tail !== undefined && (tail.type === 'code' || tail.type === 'heading'
+      || tail.type === 'hr' || tail.type === 'html' || tail.type === 'table')) break;
   }
-  if (!sawAny) return null;
+  if (seen === false) return null;
   return {
-    block: { type: 'quote', blocks, endedBlank: prevChunkEndedBlank },
-    next: p,
+    block: { type: 'quote', blocks: acc, endedBlank: prevBlank },
+    next: cursor,
   };
 }
 
