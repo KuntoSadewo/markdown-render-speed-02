@@ -1558,7 +1558,12 @@ function tryFences(src, pos) {
   // the closing fence as a separator, so the content never carries
   // a trailing newline of its own (the renderer adds one back)
   if (raw.length > 0 && raw.endsWith('\n')) lines.pop();
-  const text = lines.map((l) => dedentCols(l, ind.cols)).join('\n');
+  // marked's Dt(): indent compensation applies only to backtick
+  // fences (indentCodeCompensation is /^(\s+)(?:```)/); a tilde
+  // fence keeps every content line byte-for-byte
+  const text = c === '`'
+    ? lines.map((l) => dedentCols(l, ind.cols)).join('\n')
+    : lines.join('\n');
   const next = closeStart === -1 ? n : lineEnd(src, closeStart) + 1;
   return {
     block: { type: 'code', text, lang: unescapePunct(info.trim().split(/\s+/)[0] || ''), fenced: true },
@@ -1634,7 +1639,10 @@ function htmlBlockStart(src, pos) {
   const ind = indentOf(src, pos);
   if (ind.cols > 3) return -1;
   const rest = src.slice(ind.next, lineEnd(src, pos));
-  if (/^<\/?(?:script|pre|style|textarea)(?:[\s/>]|$)/i.test(rest)) return 1;
+  // type 1 is an OPENING <pre>/<script>/<style>/<textarea> only;
+  // a closing </pre> is a type-7 block (marked's Ue type-1
+  // alternative has no /? after <)
+  if (/^<(?:script|pre|style|textarea)(?:[\s/>]|$)/i.test(rest)) return 1;
   if (/^<!--/.test(rest)) return 2;
   if (/^<\?/.test(rest)) return 3;
   if (/^<![A-Za-z]/.test(rest)) return 4;
@@ -1680,15 +1688,27 @@ function tryHtmlBlock(src, pos) {
     p = le + 1;
   }
   if (p >= n && end === n) end = n;
-  let text = src.slice(pos, end);
-  // marked's ge(): when the block is followed by a blank line, the
-  // raw match swallows the blank lines and the trailing newlines are
-  // trimmed; when followed directly by content, one trailing newline
-  // is kept
-  if (end < n && isBlankLine(src, end) && text.endsWith('\n')) {
-    text = text.slice(0, -1);
+  // The block regex's closer alternatives end in \n* / \n+ (types
+  // 1-5), so the match swallows the empty lines that follow the
+  // closing line; types 6-7 end in (?:(?:\n[ \t]*)+\n|$) and swallow
+  // every following blank line, spaces-only ones included. ge()
+  // then trims them back. (A spaces-only line is not swallowed by
+  // types 1-5: \n* stops at the space.)
+  if (cond >= 1 && cond <= 5) {
+    while (end < n && src[end] === '\n') end++;
+  } else if (cond >= 6) {
+    while (end < n && isBlankLine(src, end)) end = lineEnd(src, end) + 1;
   }
-  return { block: { type: 'html', text }, next: end };
+  // marked's ge(): trim only when the match itself ends in more
+  // than one blank line; a single trailing newline (or a blank line
+  // after the block) is kept. The block ends where the trimmed
+  // text ends, so the blank lines are re-lexed as a newline token.
+  let text = src.slice(pos, end);
+  const parts = text.split('\n');
+  let t = parts.length - 1;
+  for (; t >= 0 && /^[ \t]*$/.test(parts[t]);) t--;
+  if (parts.length - t > 2) text = parts.slice(0, t + 1).join('\n');
+  return { block: { type: 'html', text }, next: pos + text.length };
 }
 
 // Expand the tabs in a whitespace-only string to spaces, tab stops
