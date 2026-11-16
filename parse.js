@@ -933,150 +933,216 @@ function scanInline(src, st, nodes) {
 }
 
 
-// Angle-bracket autolink <scheme:...> or <email>. Returns
-// {end, href, text} or null.
-function matchAngleAutolink(src, i) {
-  const n = src.length;
-  let j = i + 1;
-  // scheme: [A-Za-z][A-Za-z0-9+.-]{1,31}:
-  if (j < n && /[A-Za-z]/.test(src[j])) {
-    let k = j + 1;
-    while (k < n && /[A-Za-z0-9+.-]/.test(src[k])) k++;
-    if (k - j >= 2 && k - j <= 32 && src[k] === ':') {
-      let e = k + 1;
-      while (e < n && src[e] !== '>' && src[e] !== '<' && src[e] !== ' ' && src[e] !== '\n') e++;
-      if (e < n && src[e] === '>' && e > k + 1) {
-        const text = src.slice(i + 1, e);
-        return { end: e + 1, href: text, text };
-      }
+// Character classes for autolink scanning (CommonMark autolinks).
+function isAlphaCh(ch) {
+  return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z');
+}
+
+function isAlnumCh(ch) {
+  return isAlphaCh(ch) || (ch >= '0' && ch <= '9');
+}
+
+function isSchemeCh(ch) {
+  return isAlnumCh(ch) || ch === '+' || ch === '.' || ch === '-';
+}
+
+function isLocalCh(ch) {
+  if (isAlnumCh(ch)) return true;
+  return '.!#$%&\'*+/=?^_`{|}~-'.indexOf(ch) !== -1;
+}
+
+// Scan a dotted domain starting at `from` inside `text`: two or
+// more labels joined by dots, each label 1-63 characters long,
+// starting and ending with an alphanumeric and with hyphens only
+// in the middle. Returns the index just past the domain, or -1
+// when there is no dotted domain at `from`.
+function scanDottedDomain(text, from) {
+  const total = text.length;
+  let p = from;
+  let labels = 0;
+  for (;;) {
+    if (p >= total || !isAlnumCh(text[p])) return -1;
+    const start = p;
+    p++;
+    while (p < total && (isAlnumCh(text[p]) || text[p] === '-')) p++;
+    if (text[p - 1] === '-') return -1;
+    if (p - start > 63) return -1;
+    labels++;
+    if (p < total && text[p] === '.') {
+      p++;
+      continue;
     }
+    break;
   }
-  // email: local@domain (domain labels, dot optional here)
-  let at = -1;
-  let e = j;
-  while (e < n && src[e] !== '>' && src[e] !== ' ' && src[e] !== '\n' && src[e] !== '<') {
-    if (src[e] === '@') at = e;
-    e++;
+  if (labels < 2) return -1;
+  return p;
+}
+
+// Angle-bracket autolink <scheme:...> or <user@host.tld>, per the
+// CommonMark autolink rule. A scheme is a letter followed by 1-31
+// scheme characters and a colon; an email address is a local part,
+// '@', and a dotted domain. Returns the span {end, href, text}
+// or null when src[i] opens no autolink.
+function matchAngleAutolink(src, i) {
+  const total = src.length;
+  const body = i + 1;
+  if (body >= total) return null;
+  // The candidate runs to the first '>'; any space, control
+  // character or '<' before it means there is no autolink here.
+  let stop = body;
+  while (stop < total) {
+    const ch = src[stop];
+    if (ch === '>') break;
+    if (ch <= ' ' || ch === '<') return null;
+    stop++;
   }
-  if (at !== -1 && e < n && src[e] === '>') {
-    const local = src.slice(j, at);
-    if (/^[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~-]+$/.test(local)) {
-      const d = scanDomain(src, at + 1);
-      if (d && d.end === e) {
-        const text = src.slice(i + 1, e);
-        return { end: e + 1, href: 'mailto:' + text, text };
-      }
+  if (stop >= total) return null;
+  const inner = src.slice(body, stop);
+  // Scheme form: a letter, 1-31 scheme characters, a colon, and
+  // then any run of characters (possibly empty).
+  const colon = inner.indexOf(':');
+  if (colon >= 2 && colon <= 32 && isAlphaCh(inner[0])) {
+    let wellFormed = true;
+    for (let q = 1; q < colon; q++) {
+      if (!isSchemeCh(inner[q])) { wellFormed = false; break; }
+    }
+    if (wellFormed) return { end: stop + 1, href: inner, text: inner };
+  }
+  // Email form: local part, '@', dotted domain ending at '>'.
+  const at = inner.indexOf('@');
+  if (at > 0) {
+    let localOk = true;
+    for (let q = 0; q < at; q++) {
+      if (!isLocalCh(inner[q])) { localOk = false; break; }
+    }
+    if (localOk && scanDottedDomain(inner, at + 1) === inner.length) {
+      return { end: stop + 1, href: 'mailto:' + inner, text: inner };
     }
   }
   return null;
+}
+
+// Whether ch ends an unquoted attribute value: whitespace, a quote,
+// '=', '<', '>' or a backtick.
+function isAttrValueEnd(ch) {
+  return ch === ' ' || ch === '\t' || ch === '\n' || ch === '"' || ch === "'"
+    || ch === '=' || ch === '<' || ch === '>' || ch === '`';
+}
+
+// Scan the tail of an open tag starting just after its name: the
+// attributes and the closing '>' or '/>'. Every attribute must be
+// preceded by whitespace (marked's attribute pattern starts with
+// \s+), so `<m:abc>` is not a tag (no space before :abc) and
+// `<a href='bar'title=title>` is not one either (no space before
+// the second attribute). A quoted value may span a newline.
+// Returns the index just past the tag, or -1 when the tail is not
+// a well-formed tag tail.
+function scanTagTail(src, j) {
+  const total = src.length;
+  let sawSpace = false;
+  for (;;) {
+    if (j >= total) return -1;
+    const c = src[j];
+    if (c === '>') return j + 1;
+    if (c === '/' && src[j + 1] === '>') return j + 2;
+    if (c === ' ' || c === '\t' || c === '\n') {
+      j++;
+      sawSpace = true;
+      continue;
+    }
+    // An attribute name only counts after whitespace.
+    if (!sawSpace) return -1;
+    if (!isAlphaCh(c) && c !== '_' && c !== ':') return -1;
+    while (j < total && (isAlnumCh(src[j]) || src[j] === '_' || src[j] === '.' || src[j] === ':' || src[j] === '-')) j++;
+    sawSpace = false;
+    // Optional '= value' after the name, with whitespace allowed
+    // around the '='.
+    let k = j;
+    while (k < total && (src[k] === ' ' || src[k] === '\t' || src[k] === '\n')) k++;
+    if (src[k] === '=') {
+      k++;
+      while (k < total && (src[k] === ' ' || src[k] === '\t' || src[k] === '\n')) k++;
+      if (src[k] === '"' || src[k] === "'") {
+        const quote = src[k];
+        k++;
+        while (k < total && src[k] !== quote) k++;
+        if (k >= total) return -1;
+        k++;
+      } else {
+        if (k >= total || isAttrValueEnd(src[k])) return -1;
+        while (k < total && !isAttrValueEnd(src[k])) k++;
+      }
+      j = k;
+    } else {
+      // No value: whitespace skipped above separates this
+      // attribute from the next one, so it counts as seen.
+      if (k > j) sawSpace = true;
+      j = k;
+    }
+  }
 }
 
 // Match a raw HTML tag at i: comment, processing instruction,
 // declaration, CDATA section, or an open/close tag with attributes.
 // Returns {end, text, isAOpen, isAClose} or null.
 function matchHtmlTag(src, i) {
-  const n = src.length;
-  const rest = src.slice(i, i + 12);
-  if (rest.startsWith('<!--')) {
-    // marked's comment regex <!--(?:-?>|[\s\S]*?-->) : a > or ->
-    // right after <!-- closes the comment at once (<!--> and
-    // <!---> are complete comments); otherwise it runs to -->
+  const total = src.length;
+  const second = src[i + 1];
+  // Comment: <!--> and <!---> close at once (marked's comment
+  // pattern <!--(?:-?>|[\s\S]*?-->)); otherwise it runs to -->.
+  if (second === '!' && src[i + 2] === '-' && src[i + 3] === '-') {
     if (src[i + 4] === '>') return { end: i + 5, text: src.slice(i, i + 5), isAOpen: false, isAClose: false };
     if (src[i + 4] === '-' && src[i + 5] === '>') return { end: i + 6, text: src.slice(i, i + 6), isAOpen: false, isAClose: false };
-    let e = src.indexOf('-->', i + 4);
-    if (e === -1) e = n;
-    else e += 3;
-    return { end: e, text: src.slice(i, e), isAOpen: false, isAClose: false };
+    const close = src.indexOf('-->', i + 4);
+    const end = close === -1 ? total : close + 3;
+    return { end, text: src.slice(i, end), isAOpen: false, isAClose: false };
   }
-  if (rest.startsWith('<?')) {
-    let e = src.indexOf('?>', i + 2);
-    if (e === -1) e = n;
-    else e += 2;
-    return { end: e, text: src.slice(i, e), isAOpen: false, isAClose: false };
+  // Processing instruction: runs to ?> (or to the end of input).
+  if (second === '?') {
+    const close = src.indexOf('?>', i + 2);
+    const end = close === -1 ? total : close + 2;
+    return { end, text: src.slice(i, end), isAOpen: false, isAClose: false };
   }
-  if (rest.startsWith('<!')) {
-    if (i + 2 < n && /[A-Za-z]/.test(src[i + 2])) {
-      let e = src.indexOf('>', i + 2);
-      if (e === -1) return null;
-      return { end: e + 1, text: src.slice(i, e + 1), isAOpen: false, isAClose: false };
+  // Declaration or CDATA section.
+  if (second === '!') {
+    if (isAlphaCh(src[i + 2])) {
+      const close = src.indexOf('>', i + 2);
+      if (close === -1) return null;
+      return { end: close + 1, text: src.slice(i, close + 1), isAOpen: false, isAClose: false };
     }
     if (src.startsWith('<![CDATA[', i)) {
-      let e = src.indexOf(']]>', i + 9);
-      if (e === -1) e = n;
-      else e += 3;
-      return { end: e, text: src.slice(i, e), isAOpen: false, isAClose: false };
+      const close = src.indexOf(']]>', i + 9);
+      const end = close === -1 ? total : close + 3;
+      return { end, text: src.slice(i, end), isAOpen: false, isAClose: false };
     }
     return null;
   }
-  // open or close tag
-  let j = i + 1;
+  // Open or close tag.
+  let p = i + 1;
   let closing = false;
-  if (src[j] === '/') { closing = true; j++; }
-  if (j >= n || !/[A-Za-z]/.test(src[j])) return null;
-  const nameStart = j;
-  while (j < n && /[A-Za-z0-9-]/.test(src[j])) j++;
-  const name = src.slice(nameStart, j).toLowerCase();
+  if (src[p] === '/') {
+    closing = true;
+    p++;
+  }
+  if (p >= total || !isAlphaCh(src[p])) return null;
+  const nameStart = p;
+  while (p < total && (isAlnumCh(src[p]) || src[p] === '-')) p++;
+  const name = src.slice(nameStart, p).toLowerCase();
   // marked's startATag is /^<a /i: only an <a> tag with a space
-  // (attributes) after the name sets inLink; a bare <a> does not
-  const afterName = src[j];
-  // a close tag takes only whitespace, then > (no attributes)
+  // (attributes) after the name sets inLink; a bare <a> does not.
+  const afterName = src[p];
   if (closing) {
-    while (j < n && (src[j] === ' ' || src[j] === '\t' || src[j] === '\n')) j++;
-    if (j >= n || src[j] !== '>') return null;
-    return { end: j + 1, text: src.slice(i, j + 1), isAOpen: false, isAClose: name === 'a' };
+    // A close tag takes only whitespace, then '>' (no attributes).
+    while (p < total && (src[p] === ' ' || src[p] === '\t' || src[p] === '\n')) p++;
+    if (p >= total || src[p] !== '>') return null;
+    return { end: p + 1, text: src.slice(i, p + 1), isAOpen: false, isAClose: name === 'a' };
   }
-  // attributes until >; each attribute must be preceded by
-  // whitespace (marked's attribute pattern starts with \s+) — so
-  // <m:abc> is not a tag (no space before :abc) and
-  // <a href='bar'title=title> is not one either (no space before
-  // the second attribute)
-  let sawSpace = false;
-  for (;;) {
-    if (j >= n) return null;
-    const c = src[j];
-    if (c === '>') { j++; break; }
-    if (c === '/' && src[j + 1] === '>') { j += 2; break; }
-    if (c === ' ' || c === '\t' || c === '\n') { j++; sawSpace = true; continue; }
-    // attribute name — only after whitespace
-    if (!sawSpace) return null;
-    if (!/[A-Za-z_:]/.test(c)) return null;
-    while (j < n && /[A-Za-z0-9_.:-]/.test(src[j])) j++;
-    sawSpace = false;
-    // optional = value
-    let k = j;
-    while (k < n && (src[k] === ' ' || src[k] === '\t' || src[k] === '\n')) k++;
-    if (src[k] === '=') {
-      k++;
-      while (k < n && (src[k] === ' ' || src[k] === '\t' || src[k] === '\n')) k++;
-      if (src[k] === '"') {
-        k++;
-        // marked's inline tag regex allows a newline inside a
-        // quoted attribute value ("[^"]*") — <a href="foo\nbar">
-        // is a tag; only the block-level condition 7 forbids it
-        while (k < n && src[k] !== '"') k++;
-        if (k >= n || src[k] !== '"') return null;
-        k++;
-      } else if (src[k] === "'") {
-        k++;
-        while (k < n && src[k] !== "'") k++;
-        if (k >= n || src[k] !== "'") return null;
-        k++;
-      } else {
-        if (k >= n || /[ \t\n"'=<>`]/.test(src[k])) return null;
-        while (k < n && !/[ \t\n"'=<>`]/.test(src[k])) k++;
-      }
-      j = k;
-    } else {
-      // no value: the whitespace skipped above separates this
-      // attribute from the next one, so it counts as seen
-      if (k > j) sawSpace = true;
-      j = k;
-    }
-  }
+  const tailEnd = scanTagTail(src, p);
+  if (tailEnd === -1) return null;
   return {
-    end: j, text: src.slice(i, j),
-    isAOpen: !closing && name === 'a' && afterName === ' ',
-    isAClose: closing && name === 'a',
+    end: tailEnd, text: src.slice(i, tailEnd),
+    isAOpen: name === 'a' && afterName === ' ',
+    isAClose: false,
   };
 }
 
