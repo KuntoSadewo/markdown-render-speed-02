@@ -1084,18 +1084,18 @@ function matchHtmlTag(src, i) {
 // matching closing run of the same length (a code span), or null
 // when there is no closing run (the backticks are literal text).
 // A longer run does not close a shorter one.
-function skipCodeSpan(src, i) {
-  const n = src.length;
-  let k = 0;
-  while (src[i + k] === '`') k++;
-  if (k === 0) return null;
-  let j = i + k;
-  while (j < n) {
-    if (src[j] === '`') {
-      let m = 0;
-      while (src[j + m] === '`') m++;
-      if (m === k) return j + k;
-      j += m;
+function skipCodeSpan(txt, i) {
+  const total = txt.length;
+  let ticks = 0;
+  while (txt[i + ticks] === '`') ticks++;
+  if (ticks === 0) return null;
+  let j = i + ticks;
+  while (j < total) {
+    if (txt[j] === '`') {
+      let run = 0;
+      while (txt[j + run] === '`') run++;
+      if (run === ticks) return j + ticks;
+      j += run;
     } else {
       j++;
     }
@@ -1107,44 +1107,65 @@ function skipCodeSpan(src, i) {
 // that starts an HTML tag or autolink extending past the label's
 // end (the tag swallows the ] that would close the label). Code
 // spans inside the label are skipped.
-function labelHasTagPastEnd(src, labelStart, labelEnd) {
-  const n = src.length;
+function labelHasTagPastEnd(txt, labelStart, labelEnd) {
+  const total = txt.length;
   let s = labelStart;
   while (s < labelEnd) {
-    const c = src[s];
-    if (c === '\\' && s + 1 < n && isAsciiPunct(src[s + 1])) { s += 2; continue; }
-    if (c === '`') {
-      const after = skipCodeSpan(src, s);
-      if (after !== null) { s = after; continue; }
+    const c = txt[s];
+    if (c === '\\' && s + 1 < total && isAsciiPunct(txt[s + 1])) {
+      s += 2;
+      continue;
     }
-    if (c !== '<') { s++; continue; }
-    const tag = matchHtmlTag(src, s);
-    if (tag && tag.end > labelEnd) return true;
-    if (tag) { s += Math.max(1, tag.end - s); continue; }
+    if (c === '`') {
+      const after = skipCodeSpan(txt, s);
+      if (after !== null) {
+        s = after;
+        continue;
+      }
+    }
+    if (c !== '<') {
+      s++;
+      continue;
+    }
+    const tag = matchHtmlTag(txt, s);
+    if (tag !== null && tag.end > labelEnd) return true;
+    if (tag !== null) {
+      s += Math.max(1, tag.end - s);
+      continue;
+    }
     // angle autolink <scheme:...> or <email>
-    const m = /^<([a-zA-Z][a-zA-Z0-9+.-]{1,31}:[^\s\x00-\x1f<>]*|[a-zA-Z0-9.!#$%&'*+\/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+)>/.exec(src.slice(s, Math.min(n, s + 256)));
-    if (m && s + m[0].length > labelEnd) return true;
-    if (m) { s += m[0].length; continue; }
+    const m = /^<([a-zA-Z][a-zA-Z0-9+.-]{1,31}:[^\s\x00-\x1f<>]*|[a-zA-Z0-9.!#$%&'*+\/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+)>/.exec(txt.slice(s, Math.min(total, s + 256)));
+    if (m !== null && s + m[0].length > labelEnd) return true;
+    if (m !== null) {
+      s += m[0].length;
+      continue;
+    }
     s++;
   }
   return false;
 }
 
-// Parse a link (or image) starting at src[i] === '[' (or '![' with
-// i at the '!'). Returns {end, href, title, label} or null.
-function tryParseLink(src, i, st, isImage) {
-  const n = src.length;
-  const open = isImage ? i + 1 : i;
+// Parse a link (or image) starting at txt[start] === '[' (or '![' with
+// start at the '!'). Returns {end, href, title, label} or null.
+function tryParseLink(txt, start, st, isImage) {
+  const total = txt.length;
+  const open = isImage ? start + 1 : start;
   // find the matching ] with balanced brackets, honouring escapes;
   // a ] inside a code span does not close the label
   let depth = 0;
   let j = open;
-  while (j < n) {
-    const c = src[j];
-    if (c === '\\' && j + 1 < n && isAsciiPunct(src[j + 1])) { j += 2; continue; }
+  while (j < total) {
+    const c = txt[j];
+    if (c === '\\' && j + 1 < total && isAsciiPunct(txt[j + 1])) {
+      j += 2;
+      continue;
+    }
     if (c === '`') {
-      const after = skipCodeSpan(src, j);
-      if (after !== null) { j = after; continue; }
+      const after = skipCodeSpan(txt, j);
+      if (after !== null) {
+        j = after;
+        continue;
+      }
     }
     if (c === '[') depth++;
     else if (c === ']') {
@@ -1153,27 +1174,30 @@ function tryParseLink(src, i, st, isImage) {
     }
     j++;
   }
-  if (depth !== 0 || j >= n) return null;
+  if (depth !== 0 || j >= total) return null;
   // a tag/autolink inside the label that runs past the ] rejects
   // the link (marked's Be)
-  if (labelHasTagPastEnd(src, open + 1, j)) return null;
-  const label = src.slice(open + 1, j);
+  if (labelHasTagPastEnd(txt, open + 1, j)) return null;
+  const label = txt.slice(open + 1, j);
   let k = j + 1;
-  if (src[k] === '(') {
-    const tail = parseInlineLinkTail(src, k);
-    if (tail) return { end: tail.end, href: tail.href, title: tail.title, label };
+  if (txt[k] === '(') {
+    const tail = parseInlineLinkTail(txt, k);
+    if (tail !== null) return { end: tail.end, href: tail.href, title: tail.title, label };
     // the inline tail failed (e.g. a destination with spaces):
     // fall through to the shortcut reference below, leaving the
     // (...) as literal text ([foo](not a link) with a [foo] def
     // is a shortcut link + literal tail)
   }
-  if (src[k] === '[') {
+  if (txt[k] === '[') {
     // full reference [text][label] or collapsed [text][]
     let d = 0;
     let q = k;
-    while (q < n) {
-      const c = src[q];
-      if (c === '\\' && q + 1 < n && isAsciiPunct(src[q + 1])) { q += 2; continue; }
+    while (q < total) {
+      const c = txt[q];
+      if (c === '\\' && q + 1 < total && isAsciiPunct(txt[q + 1])) {
+        q += 2;
+        continue;
+      }
       if (c === '[') d++;
       else if (c === ']') {
         d--;
@@ -1181,47 +1205,56 @@ function tryParseLink(src, i, st, isImage) {
       }
       q++;
     }
-    if (d !== 0 || q >= n) return null;
-    const refLabel = src.slice(k + 1, q);
+    if (d !== 0 || q >= total) return null;
+    const refLabel = txt.slice(k + 1, q);
     const key = normalizeLabel(refLabel === '' ? label : refLabel);
     const ref = st.refs[key];
-    if (!ref) return null;
+    if (ref === undefined) return null;
     return { end: q + 1, href: ref.href, title: ref.title, label };
   }
   // shortcut reference
   if (label === '') return null;
   const ref = st.refs[normalizeLabel(label)];
-  if (!ref) return null;
+  if (ref === undefined) return null;
   return { end: j + 1, href: ref.href, title: ref.title, label };
 }
 
-// Parse the (destination "title") tail of an inline link, src[k] === '('.
-function parseInlineLinkTail(src, k) {
-  const n = src.length;
-  let p = skipInlineSpace(src, k + 1);
+// Parse the (destination "title") tail of an inline link, txt[open] === '('.
+function parseInlineLinkTail(txt, open) {
+  const total = txt.length;
+  let p = skipInlineSpace(txt, open + 1);
   if (p === -1) return null;
   let dest;
-  if (src[p] === '<') {
+  if (txt[p] === '<') {
     let q = p + 1;
     let ok = false;
-    while (q < n) {
-      const c = src[q];
+    while (q < total) {
+      const c = txt[q];
       if (c === '\n') return null;
-      if (c === '\\' && q + 1 < n && isAsciiPunct(src[q + 1])) { q += 2; continue; }
-      if (c === '>') { ok = true; break; }
+      if (c === '\\' && q + 1 < total && isAsciiPunct(txt[q + 1])) {
+        q += 2;
+        continue;
+      }
+      if (c === '>') {
+        ok = true;
+        break;
+      }
       if (c === '<') return null;
       q++;
     }
-    if (!ok) return null;
-    dest = unescapePunct(src.slice(p + 1, q));
+    if (ok === false) return null;
+    dest = unescapePunct(txt.slice(p + 1, q));
     p = q + 1;
   } else {
     let depth = 0;
     let q = p;
-    while (q < n) {
-      const c = src[q];
+    while (q < total) {
+      const c = txt[q];
       if (c === ' ' || c === '\t' || c === '\n' || c.charCodeAt(0) < 32) break;
-      if (c === '\\' && q + 1 < n && isAsciiPunct(src[q + 1])) { q += 2; continue; }
+      if (c === '\\' && q + 1 < total && isAsciiPunct(txt[q + 1])) {
+        q += 2;
+        continue;
+      }
       if (c === '(') depth++;
       else if (c === ')') {
         if (depth === 0) break;
@@ -1230,31 +1263,34 @@ function parseInlineLinkTail(src, k) {
       q++;
     }
     // an empty destination is a valid link ([link]() -> href "")
-    dest = unescapePunct(src.slice(p, q));
+    dest = unescapePunct(txt.slice(p, q));
     p = q;
   }
-  p = skipInlineSpace(src, p);
+  p = skipInlineSpace(txt, p);
   if (p === -1) return null;
   let title = null;
-  if (src[p] === '"' || src[p] === "'" || src[p] === '(') {
-    const t = parseLinkTitle(src, p);
-    if (!t) return null;
+  if (txt[p] === '"' || txt[p] === "'" || txt[p] === '(') {
+    const t = parseLinkTitle(txt, p);
+    if (t === null) return null;
     title = t.title;
-    p = skipInlineSpace(src, t.end);
+    p = skipInlineSpace(txt, t.end);
     if (p === -1) return null;
   }
-  if (src[p] !== ')') return null;
+  if (txt[p] !== ')') return null;
   return { end: p + 1, href: dest, title };
 }
 
 // Skip spaces, tabs and single newlines; return -1 on a blank line
 // or end of input.
-function skipInlineSpace(src, p) {
-  const n = src.length;
+function skipInlineSpace(txt, p) {
+  const total = txt.length;
   let seenNewline = false;
-  while (p < n) {
-    const c = src[p];
-    if (c === ' ' || c === '\t') { p++; continue; }
+  while (p < total) {
+    const c = txt[p];
+    if (c === ' ' || c === '\t') {
+      p++;
+      continue;
+    }
     if (c === '\n') {
       if (seenNewline) return -1;
       seenNewline = true;
@@ -1263,30 +1299,33 @@ function skipInlineSpace(src, p) {
     }
     break;
   }
-  return p < n ? p : -1;
+  return p < total ? p : -1;
 }
 
-// Parse a link title at src[p] ('"' or "'" or '('). Returns
+// Parse a link title at txt[p] ('"' or "'" or '('). Returns
 // {end, title} or null.
-function parseLinkTitle(src, p) {
-  const n = src.length;
-  const q0 = src[p];
+function parseLinkTitle(txt, p) {
+  const total = txt.length;
+  const q0 = txt[p];
   if (q0 !== '"' && q0 !== "'" && q0 !== '(') return null;
   const closer = q0 === '(' ? ')' : q0;
   let q = p + 1;
-  while (q < n) {
-    const c = src[q];
-    if (c === '\\' && q + 1 < n && isAsciiPunct(src[q + 1])) { q += 2; continue; }
+  while (q < total) {
+    const c = txt[q];
+    if (c === '\\' && q + 1 < total && isAsciiPunct(txt[q + 1])) {
+      q += 2;
+      continue;
+    }
     if (c === closer) {
-      return { end: q + 1, title: unescapePunct(src.slice(p + 1, q)) };
+      return { end: q + 1, title: unescapePunct(txt.slice(p + 1, q)) };
     }
     if (c === '\n') {
       if (q0 === "'") {
         // a single line ending is allowed in '...' titles, unless
         // the next line is blank
         let r = q + 1;
-        while (r < n && (src[r] === ' ' || src[r] === '\t')) r++;
-        if (r >= n || src[r] === '\n') return null;
+        while (r < total && (txt[r] === ' ' || txt[r] === '\t')) r++;
+        if (r >= total || txt[r] === '\n') return null;
         q++;
         continue;
       }
@@ -1303,8 +1342,12 @@ function unescapePunct(s) {
   if (s.indexOf('\\') === -1) return s;
   let out = '';
   for (let i = 0; i < s.length; i++) {
-    if (s[i] === '\\' && i + 1 < s.length && isAsciiPunct(s[i + 1])) { out += s[i + 1]; i++; }
-    else out += s[i];
+    if (s[i] === '\\' && i + 1 < s.length && isAsciiPunct(s[i + 1])) {
+      out += s[i + 1];
+      i++;
+    } else {
+      out += s[i];
+    }
   }
   return out;
 }
