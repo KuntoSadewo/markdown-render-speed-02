@@ -2195,38 +2195,37 @@ function tryBlockquote(txt, off, st) {
 }
 
 // info about a list item marker at a line start, or null
-function listStartInfo(src, pos) {
-  const ind = indentOf(src, pos);
+function listStartInfo(txt, off) {
+  const ind = indentOf(txt, off);
   if (ind.cols > 3) return null;
-  const le = lineEnd(src, pos);
-  const c = src[ind.next];
-  let ordered = false, delim = '', start = 1, bw = 1;
+  const le = lineEnd(txt, off);
+  const c = txt[ind.next];
+  let ordered = false;
+  let delim = '';
+  let start = 1;
+  let bw = 1;
   if (c === '*' || c === '+' || c === '-') {
     delim = c;
   } else if (c >= '0' && c <= '9') {
     let q = ind.next;
-    while (src[q] >= '0' && src[q] <= '9') q++;
+    while (txt[q] >= '0' && txt[q] <= '9') q++;
     if (q - ind.next > 9) return null;
-    const sep = src[q];
+    const sep = txt[q];
     if (sep !== '.' && sep !== ')') return null;
     delim = sep;
-    start = parseInt(src.slice(ind.next, q), 10);
+    start = parseInt(txt.slice(ind.next, q), 10);
     bw = q + 1 - ind.next;
     ordered = true;
-  } else return null;
+  } else {
+    return null;
+  }
   const q = ind.next + bw;
   if (q >= le) {
-    return {
-      ordered, delim, start, bw, bulletCol: ind.cols,
-      contentStart: q, empty: true,
-    };
+    return { ordered, delim, start, bw, bulletCol: ind.cols, contentStart: q, empty: true };
   }
-  const ch = src[q];
+  const ch = txt[q];
   if (ch !== ' ' && ch !== '\t') return null;
-  return {
-    ordered, delim, start, bw, bulletCol: ind.cols,
-    contentStart: q, empty: false,
-  };
+  return { ordered, delim, start, bw, bulletCol: ind.cols, contentStart: q, empty: false };
 }
 
 // does the raw line f start a block within the list-item indent
@@ -2258,12 +2257,19 @@ function listLineStartsBlock(f, R) {
   if (c === '>') return true;
   if (c === '-' || c === '*' || c === '_') {
     // thematic break?
-    let i = sp, count = 0;
+    let i = sp;
+    let count = 0;
     let ok = true;
     while (i < f.length) {
-      if (f[i] === c) { count++; i++; }
-      else if (f[i] === ' ' || f[i] === '\t') i++;
-      else { ok = false; break; }
+      if (f[i] === c) {
+        count++;
+        i++;
+      } else if (f[i] === ' ' || f[i] === '\t') {
+        i++;
+      } else {
+        ok = false;
+        break;
+      }
     }
     if (ok && count >= 3) return true;
     // bullet (not _)
@@ -2315,11 +2321,19 @@ function listPrevStartsBlock(m, R) {
     return a === undefined || a === ' ' || a === '\t';
   }
   if (c === '-' || c === '*' || c === '_') {
-    let i = sp, count = 0, ok = true;
+    let i = sp;
+    let count = 0;
+    let ok = true;
     while (i < m.length) {
-      if (m[i] === c) { count++; i++; }
-      else if (m[i] === ' ' || m[i] === '\t') i++;
-      else { ok = false; break; }
+      if (m[i] === c) {
+        count++;
+        i++;
+      } else if (m[i] === ' ' || m[i] === '\t') {
+        i++;
+      } else {
+        ok = false;
+        break;
+      }
     }
     if (ok && count >= 3) return true;
     return false;
@@ -2327,6 +2341,9 @@ function listPrevStartsBlock(m, R) {
   if (c === '<') return htmlBlockStartAt(m, R);
   return false;
 }
+
+// block-level HTML tag names (CommonMark condition 6)
+const BLOCK_TAGS = new Set('address article aside base basefont blockquote body caption center col colgroup dd details dialog dir div dl dt fieldset figcaption figure footer form frame frameset h1 h2 h3 h4 h5 h6 head header hr html iframe legend li link main menu menuitem nav noframes ol optgroup option p param search section summary table tbody td tfoot th thead title tr track ul'.split(' '));
 
 // HTML block condition 1-6 at a line start within the clamped
 // indent (same min(3, R-1) rule)
@@ -2336,99 +2353,172 @@ function htmlBlockStartAt(line, R) {
   while (sp < line.length && line[sp] === ' ') sp++;
   if (sp > maxSp) return false;
   const rest = line.slice(sp);
-  if (/^<(?:script|pre|style|textarea)(?:[\s>]|$)/i.test(rest)) return true;
-  if (/^<!--/.test(rest) || /^<\?/.test(rest) || /^<![A-Za-z]/.test(rest)
-    || /^<!\[CDATA\[/.test(rest)) return true;
-  if (/^<\/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h1|h2|h3|h4|h5|h6|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:[\s/>]|$)/i.test(rest)) return true;
+  if (rest.charAt(0) !== '<') return false;
+  // condition 1: <script, <pre, <style or <textarea
+  let j = 1;
+  while (j < rest.length && ((rest[j] >= 'a' && rest[j] <= 'z') || (rest[j] >= 'A' && rest[j] <= 'Z'))) j++;
+  const tag1 = rest.slice(1, j).toLowerCase();
+  const after1 = rest[j];
+  if ((tag1 === 'script' || tag1 === 'pre' || tag1 === 'style' || tag1 === 'textarea')
+    && (after1 === undefined || after1 === '>' || isSpace(after1) || after1 === '\f' || after1 === '\v')) return true;
+  // conditions 2-5: comment, processing instruction, declaration, CDATA
+  if (rest.startsWith('<!--') || rest.startsWith('<?') || rest.startsWith('<![CDATA[')) return true;
+  if (rest.charAt(1) === '!' && rest.length >= 3
+    && ((rest.charAt(2) >= 'A' && rest.charAt(2) <= 'Z') || (rest.charAt(2) >= 'a' && rest.charAt(2) <= 'z'))) return true;
+  // condition 6: block tag, optionally closing, followed by space, / or >
+  let k = 1;
+  if (rest[k] === '/') k++;
+  let nameEnd = k;
+  while (nameEnd < rest.length && ((rest[nameEnd] >= 'a' && rest[nameEnd] <= 'z')
+    || (rest[nameEnd] >= 'A' && rest[nameEnd] <= 'Z')
+    || (rest[nameEnd] >= '0' && rest[nameEnd] <= '9'))) nameEnd++;
+  const tag6 = rest.slice(k, nameEnd).toLowerCase();
+  const after6 = rest[nameEnd];
+  if (BLOCK_TAGS.has(tag6)
+    && (after6 === undefined || after6 === '>' || after6 === '/' || isSpace(after6) || after6 === '\f' || after6 === '\v')) return true;
   return false;
 }
 
+// index of the first character that is not a space, or -1
+function firstNonSpaceIndex(s) {
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] !== ' ') return i;
+  }
+  return -1;
+}
+
+// does s end with a blank line: \n, spaces/tabs, \n, spaces/tabs
+function endsWithBlankLine(s) {
+  let i = s.length;
+  while (i > 0 && (s[i - 1] === ' ' || s[i - 1] === '\t')) i--;
+  if (i === 0 || s[i - 1] !== '\n') return false;
+  i--;
+  while (i > 0 && (s[i - 1] === ' ' || s[i - 1] === '\t')) i--;
+  if (i === 0 || s[i - 1] !== '\n') return false;
+  return true;
+}
+
+// length of a leading task-list checkbox prefix "[ ] " / "[x] " /
+// "[X] " (whitespace, then a non-whitespace character), or 0
+function taskPrefixLen(text) {
+  if (text.length < 3 || text.charAt(0) !== '[') return 0;
+  const mark = text.charAt(1);
+  if (mark !== ' ' && mark !== 'x' && mark !== 'X') return 0;
+  if (text.charAt(2) !== ']') return 0;
+  let j = 3;
+  while (j < text.length && (text[j] === ' ' || text[j] === '\t')) j++;
+  if (j === 3 || j >= text.length) return 0;
+  if (isSpace(text[j]) || text[j] === '\f' || text[j] === '\v') return 0;
+  return j;
+}
+
 // list; returns {block, next} or null
-function tryList(src, pos, st) {
-  const first = listStartInfo(src, pos);
-  if (!first) return null;
-  const n = src.length;
+function tryList(txt, off, st) {
+  const first = listStartInfo(txt, off);
+  if (first === null) return null;
+  const total = txt.length;
   const items = [];
-  let p = pos;
+  let cursor = off;
   let loose = false;
   let prevEndedBlank = false;
-  while (p < n) {
-    const info = listStartInfo(src, p);
-    if (!info) break;
+  while (cursor < total) {
+    const info = listStartInfo(txt, cursor);
+    if (info === null) break;
     if (info.ordered !== first.ordered || info.delim !== first.delim) break;
-    if (isHrLine(src, p)) break;
-    const le0 = lineEnd(src, p);
-    const g = src.slice(info.contentStart, le0);
+    if (isHrLine(txt, cursor)) break;
+    const le0 = lineEnd(txt, cursor);
+    const g = txt.slice(info.contentStart, le0);
     const b = info.bulletCol + info.bw;
     // the first line's content, leading whitespace expanded from the
     // marker's column; R is its content indent
     const m = expandLeadingWS(g, b);
     const y = m.trim() === '';
-    let R, d;
+    let R;
+    let d;
     if (y) {
       R = b + 1;
       d = '';
     } else {
-      R = m.search(/[^ ]/);
+      R = firstNonSpaceIndex(m);
       if (R > 4) R = 1;
       d = m.slice(R);
       R += b;
     }
-    p = le0 + 1;
+    cursor = le0 + 1;
     // an empty item followed by a blank line: the blank is not part
     // of the item
     let u = false;
-    if (y && p < n && isBlankLine(src, p)) {
-      p = lineEnd(src, p) + 1;
+    if (y && cursor < total && isBlankLine(txt, cursor)) {
+      cursor = lineEnd(txt, cursor) + 1;
       u = true;
     }
     let mPrev = d;
     let yPrev = y;
-    while (p < n && !u) {
-      const le = lineEnd(src, p);
-      const f = src.slice(p, le);
+    while (cursor < total && u === false) {
+      const le = lineEnd(txt, cursor);
+      const f = txt.slice(cursor, le);
       const Z = expandLeadingWS(f, 0);
       if (listLineStartsBlock(f, R)) break;
-      if (Z.search(/[^ ]/) >= R || f.trim() === '') {
+      if (firstNonSpaceIndex(Z) >= R || f.trim() === '') {
         d += '\n' + Z.slice(R);
       } else {
         // lazy continuation of the item's paragraph
-        const prevIndent = mPrev.replace(/\t/g, '    ').search(/[^ ]/);
+        let prevIndent = -1;
+        let expandedLen = 0;
+        for (let k = 0; k < mPrev.length; k++) {
+          const ch = mPrev[k];
+          if (ch === ' ') expandedLen++;
+          else if (ch === '\t') expandedLen += 4;
+          else { prevIndent = expandedLen; break; }
+        }
         if (yPrev || prevIndent >= 4 || listPrevStartsBlock(mPrev, R)) break;
         let qe = f;
-        if (/^ {0,3}(?:=+|-+)[ \t]*$/.test(f)
-          && setextLevelOfStr(mPrev + '\n' + f)) {
-          qe = '    ' + Z.replace(/^ {0,3}/, '');
+        // a lazy setext underline becomes indented text, not a heading
+        let lead = 0;
+        while (lead < f.length && f[lead] === ' ' && lead < 3) lead++;
+        if (lead < f.length && (f[lead] === '=' || f[lead] === '-')) {
+          const mark = f[lead];
+          let k = lead;
+          while (k < f.length && f[k] === mark) k++;
+          let t = k;
+          while (t < f.length && (f[t] === ' ' || f[t] === '\t')) t++;
+          if (t === f.length && setextLevelOfStr(mPrev + '\n' + f) !== 0) {
+            let strip = 0;
+            while (strip < Z.length && Z[strip] === ' ' && strip < 3) strip++;
+            qe = '    ' + Z.slice(strip);
+          }
         }
         d += '\n' + qe;
       }
       yPrev = f.trim() === '';
-      p = le + 1;
+      cursor = le + 1;
       mPrev = Z.slice(R);
     }
     // looseness: a blank line at the end of this item's raw text
     // (i.e. before the next item) makes the list loose on the next
     // item; a blank line inside the item is caught when lexing it
-    const rawEnd = p;
-    const itemRaw = src.slice(pos, rawEnd);
+    const rawEnd = cursor;
+    const itemRaw = txt.slice(off, rawEnd);
     if (loose) {
       // already loose
     } else if (prevEndedBlank) {
       loose = true;
-    } else if (/\n[ \t]*\n[ \t]*$/.test(itemRaw)) {
+    } else if (endsWithBlankLine(itemRaw)) {
       prevEndedBlank = true;
     }
     // the next item starts here; remember where this item began
     const itemText = d;
     const info2 = { text: itemText, raw: itemRaw };
     items.push(info2);
-    pos = p;
+    off = cursor;
   }
-  if (!items.length) return null;
+  if (items.length === 0) return null;
   // the last item's text is trimmed; the others keep their trailing
   // blank lines (they count towards looseness when lexed)
   const lastItem = items[items.length - 1];
-  lastItem.text = lastItem.text.replace(/[ \t\n]+$/, '');
+  let end = lastItem.text.length;
+  while (end > 0 && (lastItem.text[end - 1] === ' ' || lastItem.text[end - 1] === '\t' || lastItem.text[end - 1] === '\n')) end--;
+  lastItem.text = lastItem.text.slice(0, end);
   // lex each item's text (top=false: paragraphs become text tokens)
   for (const it of items) {
     const info = { blankBetween: false };
@@ -2439,15 +2529,15 @@ function tryList(src, pos, st) {
   // task list: the item text starts with [ ] / [x] + whitespace
   for (const it of items) {
     it.task = null;
-    const m = /^\[( |x|X)\][ \t]+(?=\S)/.exec(it.text);
-    if (m && it.blocks.length
+    const prefix = taskPrefixLen(it.text);
+    if (prefix > 0 && it.blocks.length > 0
       && (it.blocks[0].type === 'text' || it.blocks[0].type === 'para')) {
-      it.task = m[1] === ' ' ? 'unchecked' : 'checked';
+      it.task = it.text.charAt(1) === ' ' ? 'unchecked' : 'checked';
       // strip the checkbox only from the first block's text (the
       // first line), not from the whole item text
-      it.blocks[0].text = it.blocks[0].text.replace(/^\[(?: |x|X)\][ \t]+/, '');
+      it.blocks[0].text = it.blocks[0].text.slice(taskPrefixLen(it.blocks[0].text));
       it.blocks[0].task = it.task;
-      it.text = it.text.replace(/^\[(?: |x|X)\][ \t]+/, '');
+      it.text = it.text.slice(prefix);
     }
   }
   // a loose list turns every text token into a paragraph
@@ -2462,13 +2552,13 @@ function tryList(src, pos, st) {
   // left for the outer lexer as a space token (which is what makes
   // a list loose when an item ends with a blank line, and what
   // separates the list from the following block)
-  let next = p;
+  let next = cursor;
   while (next > 0) {
     let contentEnd = next;
-    if (src[contentEnd - 1] === '\n') contentEnd--;
-    let start = src.lastIndexOf('\n', contentEnd - 1);
+    if (txt[contentEnd - 1] === '\n') contentEnd--;
+    let start = txt.lastIndexOf('\n', contentEnd - 1);
     start = start === -1 ? 0 : start + 1;
-    if (src.slice(start, contentEnd).trim() === '') {
+    if (txt.slice(start, contentEnd).trim() === '') {
       next = start;
     } else {
       break;
@@ -2477,7 +2567,7 @@ function tryList(src, pos, st) {
   return {
     block: {
       type: 'list', ordered: first.ordered,
-      start: first.start, tight: !loose, items,
+      start: first.start, tight: loose === false, items,
     },
     next,
   };
