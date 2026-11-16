@@ -1425,85 +1425,102 @@ function unescapePunct(s) {
 // ------------------------------------------------------------------
 
 function processEmphasis(nodes, first, last) {
-  let head = first, tail = last;
+  let head = first;
+  let tail = last;
   if (first === -1) return { first, last };
-  const delims = [];
+  const marks = [];
   for (let i = first; i !== -1; i = nodes[i].next) {
-    if (nodes[i].t === 7) delims.push(i);
+    if (nodes[i].t === 7) marks.push(i);
     if (i === last) break;
   }
-  if (delims.length === 0) return { first, last };
-  let cur = 0;
-  while (cur < delims.length) {
-    const cIdx = delims[cur];
-    const C = nodes[cIdx];
-    if (C.dead || C.n === 0 || !C.close) { cur++; continue; }
-    // look back for the nearest usable opener
-    let found = -1;
-    for (let j = cur - 1; j >= 0; j--) {
-      const oIdx = delims[j];
-      const O = nodes[oIdx];
-      if (O.dead || O.n === 0 || !O.open || O.ch !== C.ch) continue;
-      // del: marked's regex backreferences the opening run, so the
-      // opener must have the same tilde count as the closer; a
-      // mismatched opener is skipped, not a match
-      if (C.ch === '~' && O.n !== C.n) continue;
-      // odd-match rule (CommonMark rule 9): if ONE of the two
-      // delimiters can both open and close emphasis, the sum of
-      // their lengths must not be a multiple of 3 unless both are.
-      // This is judged per (opener, closer) pair: an opener that
-      // is an odd match for one closer (different length) may
-      // still match a later closer, so no persistent bottom is kept
-      if (((O.open && O.close) || (C.open && C.close))
-        && (O.n + C.n) % 3 === 0 && (O.n % 3 !== 0 || C.n % 3 !== 0)) {
-        continue;
-      }
-      found = j;
-      break;
+  if (marks.length === 0) return { first, last };
+  let ci = 0;
+  while (ci < marks.length) {
+    const closerIdx = marks[ci];
+    const closer = nodes[closerIdx];
+    if (closer.dead || closer.n === 0 || !closer.close) {
+      ci++;
+      continue;
     }
-    if (found === -1) { cur++; continue; }
-    const oIdx = delims[found];
-    const O = nodes[oIdx];
-    let use = 1;
-    if (C.ch === '~') use = O.n;
-    else if (O.n >= 2 && C.n >= 2) use = 2;
-    // create the wrapper node; its children are the nodes between O and C
-    const wIdx = nodes.length;
-    const W = {
-      t: C.ch === '~' ? 10 : (use === 2 ? 9 : 8),
-      next: -1, prev: -1, first: O.next, last: C.prev,
+    const openerPos = findEmphasisOpener(nodes, marks, ci);
+    if (openerPos === -1) {
+      ci++;
+      continue;
+    }
+    const openerIdx = marks[openerPos];
+    const opener = nodes[openerIdx];
+    let take = 1;
+    if (closer.ch === '~') take = opener.n;
+    else if (opener.n >= 2 && closer.n >= 2) take = 2;
+    // Create the wrapper node; its children are the nodes
+    // between opener and closer.
+    const wrapIdx = nodes.length;
+    const wrap = {
+      t: closer.ch === '~' ? 10 : (take === 2 ? 9 : 8),
+      next: -1, prev: -1, first: opener.next, last: closer.prev,
     };
-    nodes.push(W);
-    // delimiters between O and C are trapped: dead, literal text
-    for (let i = O.next; i !== -1 && i !== cIdx; i = nodes[i].next) {
+    nodes.push(wrap);
+    // Delimiters between opener and closer are trapped: dead,
+    // literal text.
+    for (let i = opener.next; i !== -1 && i !== closerIdx; i = nodes[i].next) {
       if (nodes[i].t === 7) nodes[i].dead = true;
     }
-    O.n -= use;
-    C.n -= use;
-    if (O.n === 0) {
-      O.dead = true;
-      if (O.prev !== -1) nodes[O.prev].next = wIdx;
-      else if (head === oIdx) head = wIdx;
-      W.prev = O.prev;
+    opener.n -= take;
+    closer.n -= take;
+    if (opener.n === 0) {
+      opener.dead = true;
+      if (opener.prev !== -1) nodes[opener.prev].next = wrapIdx;
+      else if (head === openerIdx) head = wrapIdx;
+      wrap.prev = opener.prev;
     } else {
-      if (C.ch === '~' && O.n < 2) O.dead = true;
-      O.next = wIdx;
-      W.prev = oIdx;
+      if (closer.ch === '~' && opener.n < 2) opener.dead = true;
+      opener.next = wrapIdx;
+      wrap.prev = openerIdx;
     }
-    if (C.n === 0) {
-      C.dead = true;
-      if (C.next !== -1) nodes[C.next].prev = wIdx;
-      else if (tail === cIdx) tail = wIdx;
-      W.next = C.next;
+    if (closer.n === 0) {
+      closer.dead = true;
+      if (closer.next !== -1) nodes[closer.next].prev = wrapIdx;
+      else if (tail === closerIdx) tail = wrapIdx;
+      wrap.next = closer.next;
     } else {
-      if (C.ch === '~' && C.n < 2) C.dead = true;
-      C.prev = wIdx;
-      W.next = cIdx;
+      if (closer.ch === '~' && closer.n < 2) closer.dead = true;
+      closer.prev = wrapIdx;
+      wrap.next = closerIdx;
     }
-    if (C.n > 0 && !C.dead) continue; // same closer may match again
-    cur++;
+    // A closer with delimiters left may match again.
+    if (closer.n > 0 && !closer.dead) continue;
+    ci++;
   }
   return { first: head, last: tail };
+}
+
+// Find the nearest usable opener for the closer at marks[ci]:
+// scanning backwards, the first delimiter that can open, has the
+// same character, and passes the odd-match rule (and, for '~',
+// has the same run length). Returns its position in marks, or -1.
+function findEmphasisOpener(nodes, marks, ci) {
+  const closer = nodes[marks[ci]];
+  for (let j = ci - 1; j >= 0; j--) {
+    const opener = nodes[marks[j]];
+    if (opener.dead || opener.n === 0 || !opener.open || opener.ch !== closer.ch) continue;
+    // Del: marked's regex backreferences the opening run, so the
+    // opener must have the same tilde count as the closer; a
+    // mismatched opener is skipped, not a match.
+    if (closer.ch === '~' && opener.n !== closer.n) continue;
+    // Odd-match rule (CommonMark rule 9): if ONE of the two
+    // delimiters can both open and close emphasis, the sum of
+    // their lengths must not be a multiple of 3 unless both are.
+    // Judged per (opener, closer) pair: an opener that is an odd
+    // match for one closer may still match a later closer, so no
+    // persistent bottom is kept.
+    if (((opener.open && opener.close) || (closer.open && closer.close))
+      && (opener.n + closer.n) % 3 === 0
+      && (opener.n % 3 !== 0 || closer.n % 3 !== 0)) {
+      continue;
+    }
+    return j;
+  }
+  return -1;
 }
 
 // ------------------------------------------------------------------
@@ -1511,71 +1528,74 @@ function processEmphasis(nodes, first, last) {
 // ------------------------------------------------------------------
 
 function renderNodes(nodes, first, last) {
-  let out = '';
-  for (let i = first; i !== -1; i = nodes[i].next) {
-    out += renderNode(nodes, nodes[i]);
+  const parts = [];
+  let i = first;
+  while (i !== -1) {
+    parts.push(renderNode(nodes, nodes[i]));
     if (i === last) break;
+    i = nodes[i].next;
   }
-  return out;
+  return parts.join('');
+}
+
+// Render one link or image node: an image renders its plain-text
+// alt, a link renders its children between the tags.
+function renderLinkNode(nodes, nd) {
+  const href = cleanHref(nd.href);
+  const title = nd.title !== null && nd.title !== undefined
+    ? ' title="' + escKeepRefs(nd.title) + '"' : '';
+  if (nd.img) {
+    return '<img src="' + href + '" alt="' + plainText(nodes, nd.first, nd.last) + '"' + title + '>';
+  }
+  return '<a href="' + href + '"' + title + '>'
+    + renderNodes(nodes, nd.first, nd.last) + '</a>';
 }
 
 function renderNode(nodes, nd) {
-  switch (nd.t) {
-    case 0: return renderText(nd.s);
-    case 1: return '<code>' + esc(nd.s) + '</code>';
-    case 2: return '<br>';
-    case 3: return '\n';
-    case 4: return nd.s;
-    case 5: {
-      const href = cleanHref(nd.href);
-      const title = nd.title !== null && nd.title !== undefined
-        ? ' title="' + escKeepRefs(nd.title) + '"' : '';
-      if (nd.img) {
-        return '<img src="' + href + '" alt="' + plainText(nodes, nd.first, nd.last) + '"' + title + '>';
-      }
-      return '<a href="' + href + '"' + title + '>'
-        + renderNodes(nodes, nd.first, nd.last) + '</a>';
-    }
-    case 6: return '<a href="' + cleanHref(nd.href) + '">' + renderText(nd.text) + '</a>';
-    case 7: return nd.dead || nd.n === 0 ? nd.ch.repeat(nd.n) : nd.ch.repeat(nd.n);
-    case 8: return '<em>' + renderNodes(nodes, nd.first, nd.last) + '</em>';
-    case 9: return '<strong>' + renderNodes(nodes, nd.first, nd.last) + '</strong>';
-    case 10: return '<del>' + renderNodes(nodes, nd.first, nd.last) + '</del>';
-    default: return '';
-  }
+  if (nd.t === 0) return renderText(nd.s);
+  if (nd.t === 1) return '<code>' + esc(nd.s) + '</code>';
+  if (nd.t === 2) return '<br>';
+  if (nd.t === 3) return '\n';
+  if (nd.t === 4) return nd.s;
+  if (nd.t === 5) return renderLinkNode(nodes, nd);
+  if (nd.t === 6) return '<a href="' + cleanHref(nd.href) + '">' + renderText(nd.text) + '</a>';
+  if (nd.t === 7) return nd.ch.repeat(nd.n);
+  if (nd.t === 8) return '<em>' + renderNodes(nodes, nd.first, nd.last) + '</em>';
+  if (nd.t === 9) return '<strong>' + renderNodes(nodes, nd.first, nd.last) + '</strong>';
+  if (nd.t === 10) return '<del>' + renderNodes(nodes, nd.first, nd.last) + '</del>';
+  return '';
 }
 
 // Plain text of a node list (for image alt text): formatting is
 // stripped, text is rendered as text, code as escaped code.
 function plainText(nodes, first, last) {
   if (first === -1) return '';
-  let out = '';
-  for (let i = first; i !== -1; i = nodes[i].next) {
+  const parts = [];
+  let i = first;
+  while (i !== -1) {
     const nd = nodes[i];
-    switch (nd.t) {
-      case 0: out += renderText(nd.s); break;
-      case 1: out += esc(nd.s); break;
-      case 2: out += '<br>'; break;
-      case 3: out += '\n'; break;
-      case 4: break;
-      case 5: out += plainText(nodes, nd.first, nd.last); break;
-      case 6: out += renderText(nd.text); break;
-      case 7: out += nd.ch.repeat(nd.n); break;
-      case 8: case 9: case 10: out += plainText(nodes, nd.first, nd.last); break;
-      default: break;
-    }
+    if (nd.t === 0) parts.push(renderText(nd.s));
+    else if (nd.t === 1) parts.push(esc(nd.s));
+    else if (nd.t === 2) parts.push('<br>');
+    else if (nd.t === 3) parts.push('\n');
+    else if (nd.t === 4) { /* raw html is dropped */ }
+    else if (nd.t === 5) parts.push(plainText(nodes, nd.first, nd.last));
+    else if (nd.t === 6) parts.push(renderText(nd.text));
+    else if (nd.t === 7) parts.push(nd.ch.repeat(nd.n));
+    else if (nd.t === 8 || nd.t === 9 || nd.t === 10) parts.push(plainText(nodes, nd.first, nd.last));
     if (i === last) break;
+    i = nodes[i].next;
   }
-  return out;
+  return parts.join('');
 }
 
 // Parse one leaf block's inline content to HTML. st is the document
 // state; its inLink flag persists across blocks (marked behaviour).
 function inlineHtml(src, st) {
   const nodes = [];
-  const range = scanInline(src, st, nodes, false);
-  const proc = processEmphasis(nodes, range.first, range.last);
-  return renderNodes(nodes, proc.first, proc.last);
+  const scanned = scanInline(src, st, nodes, false);
+  const resolved = processEmphasis(nodes, scanned.first, scanned.last);
+  return renderNodes(nodes, resolved.first, resolved.last);
 }
 
 // ------------------------------------------------------------------
