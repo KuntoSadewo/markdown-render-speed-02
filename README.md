@@ -1,32 +1,34 @@
 # FastMark
 
-A dependency-free Markdown renderer in a single ES module (`parse.js`),
-byte-identical to [marked](https://github.com/markedjs/marked) 18.1.3
-(default options: GFM on, breaks off) on the CommonMark 0.31.2 + GFM 0.29
-spec examples and long README documents — and several times faster, using a
-single-pass hand-written scanner instead of regex-heavy tokenizing.
+A single-file Markdown renderer (`parse.js`) with no dependencies. It
+produces exactly the HTML that marked 18.1.3 produces with its default
+settings, on the CommonMark 0.31.2 and GFM 0.29 example sets and on long
+README-style documents — while running several times faster than marked,
+thanks to a hand-written single-pass scanner instead of regex tokenizing.
 
-[![markdown-render-speed-02](https://make.fun/badge/markdown-render-speed-02.svg)](https://make.fun/c/markdown-render-speed-02)
-[![rank](https://make.fun/badge/markdown-render-speed-02/KuntoSadewo/markdown-render-speed-02/rank.svg)](https://make.fun/c/markdown-render-speed-02)
-[![reward](https://make.fun/badge/markdown-render-speed-02/KuntoSadewo/markdown-render-speed-02/reward.svg)](https://make.fun/c/markdown-render-speed-02)
+[![FastMark on make.fun](https://make.fun/badge/markdown-render-speed-02.svg)](https://make.fun/c/markdown-render-speed-02)
+[![FastMark rank](https://make.fun/badge/markdown-render-speed-02/KuntoSadewo/markdown-render-speed-02/rank.svg)](https://make.fun/c/markdown-render-speed-02)
+[![FastMark reward](https://make.fun/badge/markdown-render-speed-02/KuntoSadewo/markdown-render-speed-02/reward.svg)](https://make.fun/c/markdown-render-speed-02)
 
-## Usage
+## How to use
 
 ```js
 import { parse } from './parse.js';
-parse('# Hello\n\nSome *text*.');
-// '<h1>Hello</h1>\n<p>Some <em>text</em>.</p>\n'
+const out = parse('## Title\n\nA *quick* example.');
+// '<h2>Title</h2>\n<p>A <em>quick</em> example.</p>\n'
 ```
 
-## Files
+## What is in this repo
 
-- `parse.js` — the renderer. `export function parse(markdown)` (also the
-  default export). Stateless, no dependencies, no I/O.
-- `main.ts` — the harness driver: reads `/input/cases.json`, writes
-  `/output/html.json`. Node 22, built-in modules only.
+- `parse.js` — the renderer itself. It exports `parse(markdown)` (and
+  also as the default export). It keeps no state between calls, uses no
+  dependencies and does no I/O.
+- `main.ts` — the driver the grading harness runs: it reads the cases
+  from `/input/cases.json` and writes the rendered HTML to
+  `/output/html.json`. Node 22, only built-in modules.
 - `LICENSE` — MIT.
 
-## Entry
+## The bounty
 
-Built for the make.fun bounty
+This entry was built for the make.fun competition
 [markdown-render-speed-02](https://make.fun/c/markdown-render-speed-02).
