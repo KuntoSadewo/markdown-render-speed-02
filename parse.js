@@ -1560,9 +1560,16 @@ function tryFences(src, pos) {
   if (raw.length > 0 && raw.endsWith('\n')) lines.pop();
   // marked's Dt(): indent compensation applies only to backtick
   // fences (indentCodeCompensation is /^(\s+)(?:```)/); a tilde
-  // fence keeps every content line byte-for-byte
+  // fence keeps every content line byte-for-byte. The strip is in
+  // CHARACTERS, not columns: each line loses min(its own leading
+  // whitespace length, the fence line's leading whitespace length)
+  // — so a tab is removed whole, not converted to spaces.
+  const fenceIndentLen = ind.next - pos;
   const text = c === '`'
-    ? lines.map((l) => dedentCols(l, ind.cols)).join('\n')
+    ? lines.map((l) => {
+      const m = l.match(/^\s+/);
+      return m ? l.slice(Math.min(m[0].length, fenceIndentLen)) : l;
+    }).join('\n')
     : lines.join('\n');
   const next = closeStart === -1 ? n : lineEnd(src, closeStart) + 1;
   return {
